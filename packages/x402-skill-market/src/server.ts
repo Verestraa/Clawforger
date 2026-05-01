@@ -31,8 +31,8 @@ const mUSDCAddress = (process.env.MUSDC_ADDRESS ?? '0x00000000000000000000000000
 
 // Pinned addresses — mirror of addresses.json for hackathon scope.
 // In production, read addresses.json from disk on startup.
-const CLAWFORGER_INFT = '0x870e8E105AD1Ffe213B525dbDEC502EC87A6a45C' as const;
-const SKILL_REGISTRY = '0x4C14e7aA621A8be324c3a23AC3e1FE7190128854' as const;
+const CLAWFORGER_INFT = '0xeaC74aAD5AE551d80910AFC19537B928eEb9438A' as const;
+const SKILL_REGISTRY = '0x1fCbd3fFf244e9A77AD86bFB55BA44CE34fF3E55' as const;
 
 const index = new LocalSkillIndex();
 
