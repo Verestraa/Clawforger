@@ -14,10 +14,28 @@ import { type Address, type Hex, privateKeyToAccount } from 'viem/accounts';
 import { verifyPayment } from './verify';
 
 const port = Number(process.env.PORT ?? 3701);
-const facilitatorPrivateKey = (process.env.X402_FACILITATOR_PRIVATE_KEY ?? '') as Hex;
+
+// The facilitator signs payment receipts. By default it falls back to the
+// deployer key — same wallet that's the RoyaltyVault trustedSettler — so a
+// single .env entry covers both roles.
+function normalizeKey(raw: string | undefined): Hex | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const withPrefix = trimmed.startsWith('0x') ? trimmed : `0x${trimmed}`;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(withPrefix)) return null;
+  return withPrefix as Hex;
+}
+
+const facilitatorPrivateKey =
+  normalizeKey(process.env.X402_FACILITATOR_PRIVATE_KEY) ??
+  normalizeKey(process.env.DEPLOYER_PRIVATE_KEY);
 
 if (!facilitatorPrivateKey) {
-  console.error('Missing X402_FACILITATOR_PRIVATE_KEY in env');
+  console.error(
+    'Missing X402_FACILITATOR_PRIVATE_KEY (or DEPLOYER_PRIVATE_KEY) in env.\n' +
+      'Run with env loaded:  set -a; source .env; set +a; bun run facilitator'
+  );
   process.exit(1);
 }
 
