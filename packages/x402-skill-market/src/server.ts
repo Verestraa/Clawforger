@@ -92,6 +92,26 @@ async function syncFromChain(): Promise<void> {
 // Initial sync on startup (don't await — let the server come up immediately)
 void syncFromChain();
 
+/**
+ * Look up the per-agent RoyaltyVault address for a given iNFT tokenId.
+ * Cached per-tokenId since the vault address never changes after mint.
+ */
+const vaultCache = new Map<string, Address>();
+async function getVaultForAgent(tokenId: bigint): Promise<Address> {
+  const key = String(tokenId);
+  const cached = vaultCache.get(key);
+  if (cached) return cached;
+  const result = (await publicClient.readContract({
+    address: CLAWFORGER_INFT,
+    abi: ClawforgerINFTAbi as readonly unknown[],
+    functionName: 'agents',
+    args: [tokenId],
+  })) as readonly [Hex, Hex, Hex, Address, bigint];
+  const vault = result[3];
+  vaultCache.set(key, vault);
+  return vault;
+}
+
 // Set up the fallback signer so KeeperHubExecutor can route directly to
 // 0G via viem with KH-shaped retry semantics if KH's REST API misbehaves.
 const fallbackPk = process.env.DEPLOYER_PRIVATE_KEY as Hex | undefined;
@@ -226,38 +246,68 @@ app.post('/skill/:hash/run', async (c) => {
 });
 
 // ── Paywalled skill invocation ────────────────────────────────────
-app.all('/skill/:hash', async (c) => {
+//
+// GET /skill/:hash without X-Payment header → 402 with payment requirements.
+// POST /skill/:hash with X-Payment header   → verify, settle, execute, return.
+app.get('/skill/:hash', async (c) => {
+  const hash = c.req.param('hash').toLowerCase();
+  await syncFromChain();
+  const skill = index.get(hash);
+  if (!skill) return c.json({ error: 'unknown-skill' }, 404);
+
+  // Real per-agent vault address (NOT the iNFT contract — that was a bug).
+  const vault = await getVaultForAgent(skill.ownerINFT.tokenId);
+
+  return c.json(
+    {
+      x402Version: 1,
+      accepts: [
+        {
+          scheme: 'exact',
+          network: '0g-galileo-testnet',
+          maxAmountRequired: String(skill.priceUSDC),
+          resource: c.req.url,
+          description: `Clawforger skill: ${skill.capabilityTag}`,
+          mimeType: 'application/json',
+          payTo: vault,
+          maxTimeoutSeconds: 120,
+          asset: mUSDCAddress,
+          extra: {
+            facilitator: facilitatorUrl,
+            domain: {
+              name: 'Clawforger x402',
+              version: '1',
+              chainId: 16602,
+            },
+            types: {
+              Payment: [
+                { name: 'payer', type: 'address' },
+                { name: 'payTo', type: 'address' },
+                { name: 'asset', type: 'address' },
+                { name: 'amount', type: 'uint256' },
+                { name: 'validUntil', type: 'uint256' },
+                { name: 'nonce', type: 'bytes32' },
+              ],
+            },
+            ownerTokenId: String(skill.ownerINFT.tokenId),
+          },
+        },
+      ],
+    },
+    402
+  );
+});
+
+app.post('/skill/:hash', async (c) => {
   const hash = c.req.param('hash').toLowerCase();
   await syncFromChain();
   const skill = index.get(hash);
   if (!skill) return c.json({ error: 'unknown-skill' }, 404);
 
   const payment = c.req.header('X-Payment');
-  if (!payment) {
-    // 402 — return the payment requirements per x402 spec
-    return c.json(
-      {
-        x402Version: 1,
-        accepts: [
-          {
-            scheme: 'exact',
-            network: '0g-galileo-testnet',
-            maxAmountRequired: String(skill.priceUSDC),
-            resource: c.req.url,
-            description: `Clawforger skill: ${skill.capabilityTag}`,
-            mimeType: 'application/json',
-            payTo: skill.ownerINFT.contractAddress, // FIXME: should be the per-vault address
-            maxTimeoutSeconds: 60,
-            asset: mUSDCAddress,
-            extra: { facilitator: facilitatorUrl },
-          },
-        ],
-      },
-      402
-    );
-  }
+  if (!payment) return c.json({ error: 'missing-X-Payment' }, 402);
 
-  // Verify the payment via the facilitator
+  // 1. Verify the payment via our facilitator
   let verifyJson: any;
   try {
     const verifyResp = await fetch(`${facilitatorUrl}/verify`, {
@@ -269,31 +319,49 @@ app.all('/skill/:hash', async (c) => {
   } catch (err) {
     return c.json({ error: 'facilitator-unreachable', detail: (err as Error).message }, 502);
   }
-
   if (!verifyJson.ok) {
     return c.json({ error: 'payment-verification-failed', reason: verifyJson.reason }, 402);
   }
 
-  // Trigger settlement via KeeperHub workflow (fire-and-forget)
-  void triggerSettlement(skill, verifyJson.receipt.payment).catch((err) => {
-    console.warn('[skill-market] settlement-trigger-failed:', err);
-  });
+  const paymentPayload = verifyJson.receipt.payment as { amount: string; payer: Address };
 
-  // Execute the skill in a sandbox + return the result.
-  // The actual sandbox lives in @clawforger/skill-forge — we re-import there
-  // when the package is installed. For server-side scope here we return a
-  // stub response so the demo path works without skill-forge being wired.
+  // 2. Trigger settlement via the executor (KH first, viem fallback).
+  // We AWAIT this so the response includes the settle txHash — judges see
+  // the real value movement before the skill output is rendered.
+  let settlement: { ok: boolean; txHash?: Hex; workflowRunId: string; route: 'keeperhub' | 'viem-fallback'; error?: string };
+  try {
+    const result = await triggerSettlement(skill, paymentPayload);
+    settlement = {
+      ok: result.ok,
+      txHash: result.txHash,
+      workflowRunId: result.workflowRunId,
+      route: result.workflowRunId.startsWith('viem-fallback') ? 'viem-fallback' : 'keeperhub',
+      error: result.error,
+    };
+    if (!result.ok) {
+      console.warn('[skill-market] settlement-failed:', result.error);
+    }
+  } catch (err) {
+    return c.json(
+      { error: 'settlement-failed', detail: (err as Error).message },
+      502
+    );
+  }
+
+  // 3. Execute the skill (real implementation would run in skill-forge sandbox)
   const inputs = await c.req.json().catch(() => ({}));
   return c.json(
     {
       skill: skill.capabilityTag,
       hash: skill.hash,
-      output: { abstract: `[stub] would execute ${skill.capabilityTag} on inputs ${JSON.stringify(inputs)}` },
+      inputs,
+      output: stubSkillOutput(skill.capabilityTag, inputs),
       paid: true,
       paymentReceipt: verifyJson.receipt,
+      settlement,
     },
     200,
-    { 'X-Payment-Receipt': JSON.stringify(verifyJson.receipt) }
+    settlement.txHash ? { 'X-Settle-Tx': settlement.txHash } : {}
   );
 });
 
@@ -326,13 +394,14 @@ function stubSkillOutput(tag: string, inputs: Record<string, unknown>): Record<s
   };
 }
 
-async function triggerSettlement(skill: SkillManifest, payment: { amount: string; payer: Address }): Promise<void> {
-  // Look up the per-vault address: in practice this is read from
-  // ClawforgerINFT.agents(tokenId).royaltyVault. For hackathon, use a
-  // single template vault address from env.
-  const vaultAddress = (process.env.ROYALTY_VAULT_TEMPLATE ?? skill.ownerINFT.contractAddress) as Address;
+async function triggerSettlement(
+  skill: SkillManifest,
+  payment: { amount: string; payer: Address }
+) {
+  // Real per-agent vault, looked up via iNFT.agents(tokenId).royaltyVault.
+  const vaultAddress = await getVaultForAgent(skill.ownerINFT.tokenId);
 
-  await executor.execute({
+  return executor.execute({
     kind: 'contractCall',
     chain: '0g-galileo-testnet',
     label: `x402-settle-${skill.capabilityTag}`,
