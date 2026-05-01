@@ -28,6 +28,7 @@ SKIP_PATHS=(
   'broadcast/'
   'contracts/lib/'    # Vendored Solidity libs (forge-std test fixtures contain hex literals)
   '/lib/'             # Any nested submodule lib dirs
+  '/abis/'            # Public contract ABIs — event topic hashes look like 64-hex
   '\.lock$'
   'bun\.lock'
   'package-lock\.json'

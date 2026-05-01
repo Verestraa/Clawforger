@@ -1,0 +1,289 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "inft",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "INFT_CONTRACT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "allSkills",
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "findByTag",
+    "inputs": [
+      {
+        "name": "tag",
+        "type": "string",
+        "internalType": "string"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "type": "bytes32[]",
+        "internalType": "bytes32[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getSkill",
+    "inputs": [
+      {
+        "name": "artifactHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct SkillRegistry.Skill",
+        "components": [
+          {
+            "name": "artifactHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "ownerINFT",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "ownerTokenId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceUSDC",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "capabilityTag",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "publishedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "useCount",
+            "type": "uint32",
+            "internalType": "uint32"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "publishSkill",
+    "inputs": [
+      {
+        "name": "artifactHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "tokenId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "capabilityTag",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "priceUSDC",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "recordUse",
+    "inputs": [
+      {
+        "name": "artifactHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setTrustedRecorder",
+    "inputs": [
+      {
+        "name": "recorder",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "totalSkills",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "trustedRecorder",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "SkillPublished",
+    "inputs": [
+      {
+        "name": "artifactHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "ownerINFT",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "ownerTokenId",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "capabilityTag",
+        "type": "string",
+        "indexed": false,
+        "internalType": "string"
+      },
+      {
+        "name": "priceUSDC",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SkillUsed",
+    "inputs": [
+      {
+        "name": "artifactHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "newUseCount",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "TrustedRecorderSet",
+    "inputs": [
+      {
+        "name": "recorder",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AlreadyPublished",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotINFTOwner",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotTrustedRecorder",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnknownSkill",
+    "inputs": []
+  }
+]
