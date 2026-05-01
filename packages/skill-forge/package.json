@@ -1,0 +1,28 @@
+{
+  "name": "@clawforger/skill-forge",
+  "version": "0.0.1",
+  "description": "Self-evolution loop: generate skill code → sandbox-test → publish to 0G Storage + iNFT metadata",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clawforger/core": "workspace:*",
+    "@clawforger/memory-0g": "workspace:*",
+    "@clawforger/inft-identity": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3"
+  }
+}
