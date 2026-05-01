@@ -139,28 +139,48 @@ export function TryItModal({ skill, onClose }: Props) {
       });
 
       // ── 3. Approve ────────────────────────────────────────────────
+      // Approve max-uint so this is a one-time vault approval per user.
+      // Belt-and-suspenders: read the on-chain allowance AGAIN right
+      // before deciding to skip — never trust cached client state.
       setStep(2, { status: 'running' });
+      const MAX = 2n ** 256n - 1n;
       const allowance = (await publicClient.readContract({
         address: asset,
         abi: ERC20_ABI,
         functionName: 'allowance',
         args: [address, vault],
       })) as bigint;
+
       let approveTxHash: Hex | undefined;
       if (allowance < amount) {
         const { request } = await publicClient.simulateContract({
           address: asset,
           abi: ERC20_ABI,
           functionName: 'approve',
-          args: [vault, amount],
+          args: [vault, MAX],
           account: address,
         });
         approveTxHash = await walletClient.writeContract(request);
-        // 0G public RPC sometimes lags receipt indexing; use our resilient poller
         await waitForReceipt(publicClient, approveTxHash, { timeoutMs: 180_000 });
-        setStep(2, { status: 'done', detail: `tx ${approveTxHash.slice(0, 10)}…` });
+
+        // Sanity: re-read on-chain allowance AFTER tx confirmed
+        const post = (await publicClient.readContract({
+          address: asset,
+          abi: ERC20_ABI,
+          functionName: 'allowance',
+          args: [address, vault],
+        })) as bigint;
+        if (post < amount) {
+          throw new Error(
+            `approve tx ${approveTxHash} confirmed but on-chain allowance still ${post} — RPC lag, retry in 10s`
+          );
+        }
+        setStep(2, { status: 'done', detail: `tx ${approveTxHash.slice(0, 10)}… (max approval)` });
       } else {
-        setStep(2, { status: 'done', detail: 'already approved ✓' });
+        setStep(2, {
+          status: 'done',
+          detail: `pre-existing allowance: ${fmtMUSDC(allowance > MAX / 2n ? MAX : allowance)} mUSDC`,
+        });
       }
 
       // ── 4. EIP-712 sign ───────────────────────────────────────────
