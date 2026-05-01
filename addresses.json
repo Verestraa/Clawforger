@@ -1,39 +1,27 @@
 {
-  "_comment": "Populated by AGENT-CONTRACTS on Day 1 deploy. Every other agent reads from this file. Do not hardcode addresses anywhere else. Rewrite this file on every redeploy.",
   "_schemaVersion": 2,
-  "_note": "Clawforger is all-in on 0G. iNFTs, registry, royalty vault, and a mock USDC (mUSDC) we deploy ourselves all live on 0G Galileo testnet. No second chain.",
-  "deployedAt": null,
-  "deployedBy": null,
+  "_note": "Clawforger is all-in on 0G. Deployed by forge script script/Deploy.s.sol",
+  "deployedAt": "2026-05-02",
+  "deployedBy": "0xD0c5cCB47FDf06DA8Bd01A0Cf087C4A34c27b685",
   "chains": {
     "0g-galileo-testnet": {
       "_chainId": 16602,
       "_rpc": "https://evmrpc-testnet.0g.ai",
       "_explorer": "https://chainscan-galileo.0g.ai",
-      "ClawforgerINFT": null,
-      "SkillRegistry": null,
-      "RoyaltyVaultTemplate": null,
-      "mUSDC": null
-    },
-    "0g-aristotle": {
-      "_chainId": null,
-      "_rpc": null,
-      "_explorer": null,
-      "ClawforgerINFT": null,
-      "SkillRegistry": null,
-      "RoyaltyVaultTemplate": null,
-      "mUSDC": null
+      "ClawforgerINFT": "0x6515c5bca93765e20267f8325534A027Fb1B774b",
+      "SkillRegistry": "0xc27E78fEe0816270Fc9AC2B5DCe748149439325c",
+      "RoyaltyVaultTemplate": "0x2B1045fd9273550996CA51338b85dA12a0Ca7A30",
+      "mUSDC": "0x9Fcc04937f05fab7EAd66c79AE1404ce2477A9A3"
     }
   },
   "x402": {
     "facilitatorUrl": "http://localhost:3701",
-    "_facilitatorNote": "We run our own minimal x402 facilitator (packages/x402-facilitator) since no public facilitator exists on 0G yet. The Day-0 task is to verify on-chain receipts of mUSDC transfers. This is a strong FEEDBACK item for the x402 Foundation.",
     "settlementChain": "0g-galileo-testnet",
     "settlementAsset": "mUSDC"
   },
   "keeperhub": {
     "mcpUrl": null,
     "projectId": null,
-    "x402SettleWorkflowId": null,
-    "_zgSupportNote": "Verify on Day 0 that KeeperHub supports 0G Galileo testnet (chainId 16602). Their docs list 'Ethereum, Base, Arbitrum, Polygon, and other EVM-compatible chains' — 0G is EVM-compatible but not explicitly named. If unsupported, file feature request and use the explicit feedback as a KeeperHub Builder Feedback Bounty submission."
+    "x402SettleWorkflowId": null
   }
 }

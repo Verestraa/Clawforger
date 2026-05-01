@@ -19,7 +19,7 @@
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "contracts:build": "cd contracts && forge build",
     "contracts:test": "cd contracts && forge test -vvv",
-    "contracts:deploy": "cd contracts && forge script script/Deploy.s.sol --rpc-url 0g-galileo --broadcast --slow",
+    "contracts:deploy": "cd contracts && forge script script/Deploy.s.sol --rpc-url https://evmrpc-testnet.0g.ai --broadcast --slow",
     "facilitator": "bun run packages/x402-facilitator/src/server.ts",
     "market": "bun run packages/x402-skill-market/src/server.ts",
     "studio": "cd apps/studio && bun run dev"

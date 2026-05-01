@@ -80,36 +80,16 @@ contract Deploy is Script {
 
         vm.stopBroadcast();
 
-        // Write addresses.json so off-chain agents can pick up addresses
-        string memory json = string.concat(
-            "{",
-                '"_schemaVersion": 2,',
-                '"deployedAt": "', vm.toString(block.timestamp), '",',
-                '"deployedBy": "', vm.toString(deployer), '",',
-                '"chains": {',
-                    '"0g-galileo-testnet": {',
-                        '"_chainId": 16602,',
-                        '"_rpc": "https://evmrpc-testnet.0g.ai",',
-                        '"_explorer": "https://chainscan-galileo.0g.ai",',
-                        '"ClawforgerINFT": "', vm.toString(address(inft)), '",',
-                        '"SkillRegistry": "', vm.toString(address(registry)), '",',
-                        '"RoyaltyVaultTemplate": "', vm.toString(address(template)), '",',
-                        '"mUSDC": "', vm.toString(address(mUSDC)), '"',
-                    '}',
-                '},',
-                '"x402": {',
-                    '"facilitatorUrl": "http://localhost:3701",',
-                    '"settlementChain": "0g-galileo-testnet",',
-                    '"settlementAsset": "mUSDC"',
-                '},',
-                '"keeperhub": {',
-                    '"mcpUrl": null,',
-                    '"projectId": null,',
-                    '"x402SettleWorkflowId": null',
-                '}',
-            "}"
-        );
-        vm.writeFile("../addresses.json", json);
-        console.log("addresses.json written");
+        // Note: addresses.json is updated manually after deploy (Foundry's
+        // fs_permissions are fussy about parent-dir writes from a cd'd cwd).
+        // The deployment addresses are printed above — copy them into
+        // ../addresses.json. Run `bun run sync:addresses` after deploy.
+        console.log("");
+        console.log("=== copy these into addresses.json ===");
+        console.log("ClawforgerINFT:       ", address(inft));
+        console.log("SkillRegistry:        ", address(registry));
+        console.log("RoyaltyVaultTemplate: ", address(template));
+        console.log("mUSDC:                ", address(mUSDC));
+        console.log("deployer:             ", deployer);
     }
 }

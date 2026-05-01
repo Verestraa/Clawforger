@@ -1,5 +1,6 @@
 import { Outlet, Link, useLocation } from 'react-router';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { MintMUSDC } from './components/MintMUSDC';
 
 const NAV = [
   { to: '/', label: 'home' },
@@ -34,7 +35,10 @@ export default function App() {
             ))}
           </nav>
         </div>
-        <ConnectButton />
+        <div className="flex items-center gap-3">
+          <MintMUSDC />
+          <ConnectButton />
+        </div>
       </header>
       <main className="flex-1 px-6 py-8 max-w-6xl mx-auto w-full">
         <Outlet />
