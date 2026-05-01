@@ -31,6 +31,7 @@ import {
 } from 'viem';
 import { useAccount, usePublicClient, useWalletClient } from 'wagmi';
 import { ADDRESSES } from '@/lib/contracts';
+import { waitForReceipt } from '@/lib/waitTx';
 
 const MARKET_URL =
   (import.meta.env.VITE_X402_MARKET_URL as string | undefined) ?? 'http://localhost:3700';
@@ -155,13 +156,8 @@ export function TryItModal({ skill, onClose }: Props) {
           account: address,
         });
         approveTxHash = await walletClient.writeContract(request);
-        await publicClient.waitForTransactionReceipt({
-          hash: approveTxHash,
-          timeout: 60_000,
-          pollingInterval: 2_000,
-          retryCount: 30,
-          retryDelay: 2_000,
-        });
+        // 0G public RPC sometimes lags receipt indexing; use our resilient poller
+        await waitForReceipt(publicClient, approveTxHash, { timeoutMs: 180_000 });
         setStep(2, { status: 'done', detail: `tx ${approveTxHash.slice(0, 10)}…` });
       } else {
         setStep(2, { status: 'done', detail: 'already approved ✓' });
