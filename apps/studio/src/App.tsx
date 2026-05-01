@@ -13,7 +13,7 @@ const NAV = [
 export default function App() {
   const { pathname } = useLocation();
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="content-root min-h-screen flex flex-col">
       <header className="border-b border-zinc-900/60 px-6 py-4 flex items-center justify-between sticky top-0 bg-zinc-950/70 backdrop-blur-md z-10">
         <div className="flex items-center gap-8">
           <Link to="/" className="font-bold tracking-tight text-lg flex items-center gap-2">

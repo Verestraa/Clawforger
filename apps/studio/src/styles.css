@@ -3,26 +3,37 @@
 @tailwind utilities;
 
 @layer base {
-  html, body {
-    @apply font-mono bg-zinc-950 text-zinc-100;
+  html {
+    background-color: #050810;
+    color: #f0f4ff;
+    color-scheme: dark;
+    scroll-behavior: smooth;
   }
   body {
+    @apply font-mono text-zinc-100;
+    background: transparent;
     overflow-x: hidden;
+    min-height: 100vh;
   }
   h1, h2, h3 {
     @apply tracking-tight;
+  }
+  ::selection {
+    background: rgba(249, 115, 22, 0.85);
+    color: #050810;
   }
 }
 
 @layer components {
   .card {
-    @apply rounded-xl border border-zinc-800 bg-zinc-900/40 p-5 backdrop-blur-sm;
+    @apply rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-5 backdrop-blur-sm;
   }
   .btn {
     @apply inline-flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800/80 px-4 py-2 text-sm font-medium backdrop-blur-sm hover:border-accent hover:bg-zinc-700 transition;
   }
   .btn-primary {
-    @apply bg-accent text-zinc-950 border-accent hover:bg-orange-400 shadow-[0_0_30px_-5px_rgba(249,115,22,0.5)];
+    @apply bg-accent text-zinc-950 border-accent hover:bg-orange-400;
+    box-shadow: 0 0 30px -5px rgba(249, 115, 22, 0.5);
   }
   .pill {
     @apply inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-900/60 backdrop-blur-sm px-3 py-1 text-xs;
@@ -33,86 +44,58 @@
 }
 
 /* ──────────────────────────────────────────────────────────────────
- * Starry background — three parallax layers via box-shadow trick.
- * No JS, GPU-accelerated transform, ~5KB of CSS for hundreds of stars.
+ * Starry background — OpenClaw-inspired tiled radial-gradients.
+ * The 350x200 tile repeats across the viewport so a dozen stars
+ * become hundreds. Single fixed layer at z-index 0 with body
+ * transparent so the stars actually show.
  * ────────────────────────────────────────────────────────────────── */
 
-.starry-bg {
+.starry-root {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
   background:
-    radial-gradient(ellipse at 50% -10%, rgba(249, 115, 22, 0.18), transparent 60%),
-    radial-gradient(ellipse at 80% 100%, rgba(249, 115, 22, 0.08), transparent 50%),
-    #0a0a0a;
+    radial-gradient(ellipse 1200px 800px at 50% -10%, rgba(249, 115, 22, 0.18), transparent 70%),
+    radial-gradient(ellipse 800px 600px at 90% 100%, rgba(249, 115, 22, 0.06), transparent 70%),
+    #050810;
 }
 
 .stars {
   position: absolute;
   inset: 0;
+  pointer-events: none;
   background-image:
-    radial-gradient(1px 1px at 20% 30%, white, transparent),
-    radial-gradient(1px 1px at 60% 70%, white, transparent),
-    radial-gradient(1px 1px at 50% 50%, white, transparent),
-    radial-gradient(1px 1px at 25% 80%, white, transparent),
-    radial-gradient(1px 1px at 75% 25%, white, transparent),
-    radial-gradient(1px 1px at 90% 60%, white, transparent),
-    radial-gradient(1px 1px at 40% 10%, white, transparent),
-    radial-gradient(1px 1px at 10% 90%, white, transparent),
-    radial-gradient(1px 1px at 35% 55%, white, transparent),
-    radial-gradient(1px 1px at 85% 85%, white, transparent),
-    radial-gradient(1px 1px at 15% 65%, white, transparent),
-    radial-gradient(1px 1px at 65% 15%, white, transparent),
-    radial-gradient(1px 1px at 45% 95%, white, transparent),
-    radial-gradient(1px 1px at 5% 45%, white, transparent),
-    radial-gradient(1px 1px at 95% 35%, white, transparent),
-    radial-gradient(1px 1px at 55% 5%, white, transparent),
-    radial-gradient(1px 1px at 30% 40%, white, transparent),
-    radial-gradient(1px 1px at 70% 80%, white, transparent),
-    radial-gradient(1px 1px at 80% 20%, white, transparent),
-    radial-gradient(1px 1px at 20% 70%, white, transparent);
-  background-size: 200% 200%;
-  background-repeat: repeat;
-  opacity: 0.4;
+    radial-gradient(2px 2px at 20px 30px, rgba(255, 255, 255, 0.85), transparent),
+    radial-gradient(2px 2px at 40px 70px, rgba(255, 255, 255, 0.55), transparent),
+    radial-gradient(1px 1px at 90px 40px, rgba(255, 255, 255, 0.7), transparent),
+    radial-gradient(2px 2px at 130px 80px, rgba(255, 255, 255, 0.45), transparent),
+    radial-gradient(1px 1px at 160px 120px, rgba(255, 255, 255, 0.75), transparent),
+    radial-gradient(2px 2px at 200px 60px, rgba(249, 115, 22, 0.7), transparent),
+    radial-gradient(1px 1px at 250px 150px, rgba(255, 255, 255, 0.5), transparent),
+    radial-gradient(2px 2px at 300px 40px, rgba(249, 115, 22, 0.45), transparent),
+    radial-gradient(1px 1px at 75px 165px, rgba(255, 255, 255, 0.6), transparent),
+    radial-gradient(1.5px 1.5px at 220px 180px, rgba(255, 255, 255, 0.55), transparent),
+    radial-gradient(1px 1px at 320px 110px, rgba(255, 255, 255, 0.7), transparent);
+  background-size: 350px 200px;
+  animation: twinkle 8s ease-in-out infinite alternate;
 }
 
-.stars-small {
-  background-size: 250% 250%;
+.stars-far {
+  background-size: 700px 400px;
   opacity: 0.5;
-  animation: twinkle 6s ease-in-out infinite;
-}
-
-.stars-medium {
-  background-size: 400% 400%;
-  opacity: 0.3;
-  animation: twinkle 9s ease-in-out infinite reverse;
-}
-
-.stars-large {
-  background-image:
-    radial-gradient(1.5px 1.5px at 25% 35%, rgba(255,255,255,0.9), transparent),
-    radial-gradient(1.5px 1.5px at 75% 65%, rgba(255,255,255,0.9), transparent),
-    radial-gradient(2px 2px at 45% 25%, rgba(249,115,22,0.6), transparent),
-    radial-gradient(1.5px 1.5px at 85% 45%, rgba(255,255,255,0.9), transparent),
-    radial-gradient(1.5px 1.5px at 15% 75%, rgba(255,255,255,0.9), transparent),
-    radial-gradient(2px 2px at 55% 85%, rgba(249,115,22,0.6), transparent);
-  background-size: 600% 600%;
-  opacity: 0.6;
-  animation: twinkle 12s ease-in-out infinite;
+  animation: twinkle 14s ease-in-out infinite alternate-reverse;
 }
 
 @keyframes twinkle {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 0.7; }
+  0%   { opacity: 0.4; }
+  100% { opacity: 0.9; }
 }
 
-.orange-glow {
-  position: absolute;
-  top: -20%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 800px;
-  height: 800px;
-  background: radial-gradient(circle, rgba(249, 115, 22, 0.15) 0%, transparent 60%);
-  filter: blur(40px);
-  pointer-events: none;
+/* The content layer must sit above the stars */
+.content-root {
+  position: relative;
+  z-index: 1;
 }
 
 /* Glowing accent for the lobster mascot in the hero */
@@ -122,6 +105,10 @@
 }
 
 /* Ambient hover-glow for primary cards */
+.glow-on-hover {
+  transition: box-shadow 0.25s ease, border-color 0.25s ease;
+}
 .glow-on-hover:hover {
   box-shadow: 0 0 30px -5px rgba(249, 115, 22, 0.25);
+  border-color: rgba(249, 115, 22, 0.4);
 }
