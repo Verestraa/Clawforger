@@ -1,0 +1,37 @@
+{
+  "name": "clawforger",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Self-evolving iNFT agents that earn USDC by selling skills via x402 — every onchain action via KeeperHub, all on 0G.",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean && rm -rf node_modules .turbo",
+    "contracts:build": "cd contracts && forge build",
+    "contracts:test": "cd contracts && forge test -vvv",
+    "contracts:deploy": "cd contracts && forge script script/Deploy.s.sol --rpc-url 0g-galileo --broadcast --slow",
+    "facilitator": "bun run packages/x402-facilitator/src/server.ts",
+    "market": "bun run packages/x402-skill-market/src/server.ts",
+    "studio": "cd apps/studio && bun run dev"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0",
+    "typescript": "^5.6.3",
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.5",
+    "prettier": "^3.4.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  }
+}
