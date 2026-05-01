@@ -1,0 +1,20 @@
+{
+  "name": "@clawforger/example-writer",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "@clawforger/core": "workspace:*",
+    "@clawforger/inft-identity": "workspace:*",
+    "@clawforger/memory-0g": "workspace:*",
+    "@clawforger/x402-skill-market": "workspace:*",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.3"
+  }
+}
