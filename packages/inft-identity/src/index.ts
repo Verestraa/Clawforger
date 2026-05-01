@@ -88,12 +88,14 @@ export async function mintAgent(opts: MintAgentOpts): Promise<MintAgentResult> {
   });
 
   const txHash = await opts.signer.writeContract(request);
+  // 0G's testnet RPC sometimes lags receipt indexing; pad timeout heavily.
   const receipt = await publicClient.waitForTransactionReceipt({
     hash: txHash,
-    timeout: 90_000,
-    pollingInterval: 2_000,
-    retryCount: 30,
-    retryDelay: 2_000,
+    timeout: 180_000,
+    pollingInterval: 3_000,
+    retryCount: 60,
+    retryDelay: 3_000,
+    confirmations: 1,
   });
 
   // 4. Extract tokenId from the AgentMinted event

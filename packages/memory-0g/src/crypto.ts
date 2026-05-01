@@ -48,9 +48,14 @@ export async function deriveKeyFromSignature(signature: Hex): Promise<CryptoKey>
   );
 }
 
-/** Encrypt a JSON-serializable value with AES-256-GCM. */
+/** JSON.stringify replacer that serializes BigInt as decimal strings. */
+function bigintReplacer(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? value.toString() : value;
+}
+
+/** Encrypt a JSON-serializable value with AES-256-GCM. BigInts → decimal strings. */
 export async function encrypt(key: CryptoKey, data: unknown): Promise<Uint8Array> {
-  const plaintext = new TextEncoder().encode(JSON.stringify(data));
+  const plaintext = new TextEncoder().encode(JSON.stringify(data, bigintReplacer));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = new Uint8Array(
     await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext)
