@@ -69,10 +69,15 @@ contract SkillRegistry {
         emit SkillPublished(artifactHash, INFT_CONTRACT, tokenId, capabilityTag, priceUSDC);
     }
 
-    /// @notice Increment the use count after a paid x402 settlement
-    /// @dev Only callable by the trusted recorder (RoyaltyVault)
+    /// @notice Increment the use count after a skill execution.
+    /// @dev    Permissionless: useCount only drives marketplace sorting and
+    ///         analytics, not value distribution. Each per-agent RoyaltyVault
+    ///         calls this from its settle() function — making it permissioned
+    ///         would require the registry to track every vault address (one
+    ///         per agent), which is impractical. Worst case anyone can inflate
+    ///         their own skill's useCount, which would self-detect quickly
+    ///         from on-chain history.
     function recordUse(bytes32 artifactHash) external {
-        if (msg.sender != trustedRecorder) revert NotTrustedRecorder();
         Skill storage s = _skills[artifactHash];
         if (s.artifactHash == bytes32(0)) revert UnknownSkill();
         unchecked { s.useCount += 1; }

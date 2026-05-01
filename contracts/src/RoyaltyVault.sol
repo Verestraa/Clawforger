@@ -76,8 +76,9 @@ contract RoyaltyVault is ReentrancyGuard {
 
         emit RoyaltyDistributed(toOwner, toProtocol, currentOwner);
 
-        // Best-effort: skip-on-revert is fine, but registry should be reliable
-        ISkillRegistry(SKILL_REGISTRY).recordUse(artifactHash);
+        // Best-effort recordUse — wrapped so a registry hiccup never reverts
+        // a successful settlement. Any failure is silently ignored.
+        try ISkillRegistry(SKILL_REGISTRY).recordUse(artifactHash) {} catch {}
     }
 
     /// @notice Owner of the contract (iNFT contract itself) can update the trusted settler

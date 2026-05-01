@@ -6,10 +6,10 @@ import MUSDCAbi from '@clawforger/core/abis/MUSDC.json';
 // Pinned addresses from the latest deploy on 0G Galileo testnet (chainId 16602).
 // Mirror of `addresses.json` at the repo root.
 export const ADDRESSES = {
-  ClawforgerINFT: '0xeaC74aAD5AE551d80910AFC19537B928eEb9438A',
-  SkillRegistry: '0x1fCbd3fFf244e9A77AD86bFB55BA44CE34fF3E55',
-  RoyaltyVaultTemplate: '0x2C4f63bfbAd08c17bEdC37E96a503eB74b68edba',
-  mUSDC: '0x96041fFF185173e2650bE8344a96c072Df036f9A',
+  ClawforgerINFT: '0xfe9163ee0a168e30c10c458c3fadf9f8566647fc',
+  SkillRegistry: '0xa20f408bdc1340ded25f602469b623d22adc201c',
+  RoyaltyVaultTemplate: '0xb1bf1fa01840a031d45152cc37bd70d8fef63b0e',
+  mUSDC: '0xbabaeabce4fbb7a356b2b9e868563da74edfd5f5',
 } as const;
 
 export const ABIS = {

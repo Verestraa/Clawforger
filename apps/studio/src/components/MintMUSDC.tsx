@@ -9,7 +9,7 @@ import { parseAbi } from 'viem';
 import { Coins, Plus, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
-const MUSDC_ADDRESS = '0x96041fFF185173e2650bE8344a96c072Df036f9A' as const;
+const MUSDC_ADDRESS = '0xbabaeabce4fbb7a356b2b9e868563da74edfd5f5' as const;
 const MINT_AMOUNT = 10_000n * 10n ** 6n; // 10,000 mUSDC (6 decimals)
 
 const MUSDC_ABI = parseAbi([

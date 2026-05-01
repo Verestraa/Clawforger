@@ -30,9 +30,9 @@ const facilitatorUrl = process.env.X402_FACILITATOR_URL ?? 'http://localhost:370
 
 // Pinned addresses — mirror of addresses.json for hackathon scope.
 // In production, read addresses.json from disk on startup.
-const CLAWFORGER_INFT = '0xeaC74aAD5AE551d80910AFC19537B928eEb9438A' as const;
-const SKILL_REGISTRY = '0x1fCbd3fFf244e9A77AD86bFB55BA44CE34fF3E55' as const;
-const MUSDC_ADDRESS = '0x96041fFF185173e2650bE8344a96c072Df036f9A' as const;
+const CLAWFORGER_INFT = '0xfe9163ee0a168e30c10c458c3fadf9f8566647fc' as const;
+const SKILL_REGISTRY = '0xa20f408bdc1340ded25f602469b623d22adc201c' as const;
+const MUSDC_ADDRESS = '0xbabaeabce4fbb7a356b2b9e868563da74edfd5f5' as const;
 const mUSDCAddress: Address = MUSDC_ADDRESS;
 
 const index = new LocalSkillIndex();

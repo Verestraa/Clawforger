@@ -70,15 +70,13 @@ contract SkillRegistryTest is Test {
         assertEq(found[1], bytes32(uint256(0xB)));
     }
 
-    function testRecordUseOnlyTrusted() public {
+    function testRecordUseIsPermissionless() public {
         uint256 tokenId = _mintAgent(alice);
         vm.prank(alice);
         registry.publishSkill(bytes32(uint256(0xA)), tokenId, "fetch.arxiv", 50000);
 
-        vm.expectRevert(SkillRegistry.NotTrustedRecorder.selector);
-        registry.recordUse(bytes32(uint256(0xA)));
-
-        vm.prank(recorder);
+        // Anyone can call recordUse (only increments a counter)
+        vm.prank(bob);
         registry.recordUse(bytes32(uint256(0xA)));
 
         SkillRegistry.Skill memory s = registry.getSkill(bytes32(uint256(0xA)));
