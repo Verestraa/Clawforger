@@ -42,6 +42,11 @@ export default function AgentDetail() {
     query: { enabled: tokenId !== undefined },
   });
 
+  // ⚠️ All hooks MUST be called before any early-return so the hook order
+  //   is consistent across renders (rules of hooks).
+  const { events: evolutionEvents } = useAgentEvolution(tokenId);
+  const { skills: publishedSkills } = useAgentSkills(tokenId);
+
   if (tokenId === undefined) {
     return <div className="card text-center text-zinc-500">invalid agent id</div>;
   }
@@ -64,10 +69,8 @@ export default function AgentDetail() {
   const personaPayload = loadPayload(intelligenceHash);
   const name = personaPayload?.name ?? `Agent #${tokenIdStr}`;
 
-  const { events: evolutionEvents } = useAgentEvolution(tokenId);
-  const { skills: publishedSkills } = useAgentSkills(tokenId);
   const totalEarned = publishedSkills.reduce(
-    (acc, s) => acc + s.priceUSDC * 95n / 100n, // optimistic 95% × useCount=1; real total needs RoyaltyDistributed sum
+    (acc, s) => acc + (s.priceUSDC * 95n) / 100n,
     0n
   );
 
