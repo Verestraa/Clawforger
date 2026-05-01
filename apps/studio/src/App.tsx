@@ -14,10 +14,11 @@ export default function App() {
   const { pathname } = useLocation();
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="border-b border-zinc-900 px-6 py-4 flex items-center justify-between sticky top-0 bg-zinc-950/80 backdrop-blur z-10">
+      <header className="border-b border-zinc-900/60 px-6 py-4 flex items-center justify-between sticky top-0 bg-zinc-950/70 backdrop-blur-md z-10">
         <div className="flex items-center gap-8">
           <Link to="/" className="font-bold tracking-tight text-lg flex items-center gap-2">
-            <span className="text-accent">claw</span>forger
+            <span className="text-xl">🦞</span>
+            <span><span className="text-accent">claw</span>forger</span>
           </Link>
           <nav className="flex gap-1 text-sm">
             {NAV.map((n) => (

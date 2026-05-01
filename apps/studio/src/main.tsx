@@ -8,6 +8,7 @@ import { Toaster } from 'sonner';
 
 import { wagmiConfig } from './lib/wagmi';
 import App from './App';
+import { StarryBackground } from './components/StarryBackground';
 import Landing from './routes/Landing';
 import Mint from './routes/Mint';
 import AgentsList from './routes/AgentsList';
@@ -25,6 +26,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider theme={darkTheme({ accentColor: '#f97316' })}>
+          <StarryBackground />
           <BrowserRouter>
             <Routes>
               <Route element={<App />}>
