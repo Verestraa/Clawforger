@@ -186,16 +186,69 @@ contract ClawforgerINFT is ERC721, Ownable2Step, IERC4906 {
         );
     }
 
-    /// @dev Generate a tiny SVG so the iNFT has an image in any explorer.
+    /// @dev Generate the on-chain NFT card image. Pure SVG, no externals.
+    ///      Layout (400x400):
+    ///        - linear-gradient navy background
+    ///        - radial purple aurora at top
+    ///        - rounded inset frame + four corner-bracket marks (registration card vibe)
+    ///        - centered geometric brand mark (claw + anvil + ember + eye)
+    ///        - "CLAWFORGER" wordmark with purple "CLAW" prefix
+    ///        - AGENT #N (mono, wide-tracking)
+    ///        - footer divider + ERC-7857 · 0G GALILEO chain stamp
     function _renderSvg(uint256 tokenId) private pure returns (bytes memory) {
         return abi.encodePacked(
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">',
-                '<rect width="400" height="400" fill="#0a0a0a"/>',
-                '<circle cx="200" cy="180" r="80" fill="none" stroke="#f97316" stroke-width="3"/>',
-                '<circle cx="200" cy="180" r="40" fill="#f97316" opacity="0.3"/>',
-                '<text x="200" y="190" font-family="monospace" font-size="32" font-weight="700" fill="#f97316" text-anchor="middle">CLAW</text>',
-                '<text x="200" y="290" font-family="monospace" font-size="18" fill="#a1a1aa" text-anchor="middle">Agent #', tokenId.toString(), '</text>',
-                '<text x="200" y="320" font-family="monospace" font-size="11" fill="#52525b" text-anchor="middle">self-evolving on 0G</text>',
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">',
+                '<defs>',
+                    '<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">',
+                        '<stop offset="0" stop-color="#0c0820"/>',
+                        '<stop offset="0.55" stop-color="#050810"/>',
+                        '<stop offset="1" stop-color="#080d18"/>',
+                    '</linearGradient>',
+                    '<radialGradient id="aurora" cx="0.5" cy="0.05" r="0.6">',
+                        '<stop offset="0" stop-color="#B75FFF" stop-opacity="0.32"/>',
+                        '<stop offset="0.7" stop-color="#B75FFF" stop-opacity="0"/>',
+                    '</radialGradient>',
+                '</defs>',
+                // Background + aurora
+                '<rect width="400" height="400" fill="url(#bg)"/>',
+                '<rect width="400" height="400" fill="url(#aurora)"/>',
+                // Inset frame
+                '<rect x="12" y="12" width="376" height="376" rx="14" fill="none" stroke="#1a1830" stroke-width="1"/>',
+                // Corner brackets — top-left, top-right, bottom-left, bottom-right
+                '<g stroke="#B75FFF" stroke-width="1.5" fill="none" opacity="0.55">',
+                    '<path d="M22 32 L22 22 L32 22"/>',
+                    '<path d="M378 32 L378 22 L368 22"/>',
+                    '<path d="M22 368 L22 378 L32 378"/>',
+                    '<path d="M378 368 L378 378 L368 378"/>',
+                '</g>',
+                // Brand mark — translate to (100, 60), source 200x200 viewBox
+                '<g transform="translate(100 60)">',
+                    // anvil base (deep purple)
+                    '<path d="M36 138 L164 138 L156 158 L44 158 Z" fill="#581C87"/>',
+                    // anvil top slab
+                    '<path d="M28 118 L184 118 Q188 118 188 122 L188 130 Q188 134 184 134 L32 134 Q28 134 28 130 Z" fill="#F0F4FF"/>',
+                    // claw upper jaw
+                    '<path d="M32 118 Q32 56 100 44 Q168 56 168 118 L152 118 Q152 72 100 62 Q48 72 48 118 Z" fill="#F0F4FF"/>',
+                    // pincer tip
+                    '<path d="M152 118 L168 118 L168 100 Z" fill="#F0F4FF"/>',
+                    // eye dot
+                    '<circle cx="74" cy="92" r="5" fill="#B75FFF"/>',
+                    // ember spark
+                    '<path d="M178 108 L188 100 L184 116 Z" fill="#B75FFF"/>',
+                '</g>',
+                // Wordmark
+                '<text x="200" y="306" font-family="system-ui,-apple-system,sans-serif" font-size="22" font-weight="800" letter-spacing="-0.5" text-anchor="middle">',
+                    '<tspan fill="#B75FFF">CLAW</tspan><tspan fill="#F0F4FF">FORGER</tspan>',
+                '</text>',
+                // Agent number — wide-tracked mono
+                '<text x="200" y="332" font-family="ui-monospace,monospace" font-size="11" fill="#8892b0" letter-spacing="3.6" text-anchor="middle">',
+                    'AGENT #', tokenId.toString(),
+                '</text>',
+                // Divider line + chain stamp
+                '<line x1="100" y1="360" x2="300" y2="360" stroke="#1a1830" stroke-width="1"/>',
+                '<text x="200" y="378" font-family="ui-monospace,monospace" font-size="9" fill="#5A6480" letter-spacing="2.4" text-anchor="middle">',
+                    'ERC-7857  \xc2\xb7  0G GALILEO',
+                '</text>',
             '</svg>'
         );
     }
