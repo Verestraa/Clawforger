@@ -17,7 +17,7 @@ PATTERNS=(
   'xoxb-[A-Za-z0-9-]+'                   # Slack bot token
 )
 
-# Files we never scan (test fixtures, contracts with bytecode, etc.)
+# Files we never scan (test fixtures, contracts with bytecode, vendored libs, etc.)
 SKIP_PATHS=(
   'out/'              # Foundry build artifacts (have bytecode that matches 64-hex)
   'cache/'
@@ -26,7 +26,11 @@ SKIP_PATHS=(
   'dist/'
   'build/'
   'broadcast/'
+  'contracts/lib/'    # Vendored Solidity libs (forge-std test fixtures contain hex literals)
+  '/lib/'             # Any nested submodule lib dirs
   '\.lock$'
+  'bun\.lock'
+  'package-lock\.json'
 )
 
 STAGED=$(git diff --cached --name-only --diff-filter=ACM)
