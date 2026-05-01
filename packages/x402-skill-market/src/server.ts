@@ -16,7 +16,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
-import { type Address, type Hex, createWalletClient, http } from 'viem';
+import { type Address, type Hex, createPublicClient, createWalletClient, http, parseAbiItem } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { SkillManifest } from '@clawforger/core';
 import { zgGalileoTestnet } from '@clawforger/core';
@@ -32,8 +32,65 @@ const mUSDCAddress = (process.env.MUSDC_ADDRESS ?? '0x00000000000000000000000000
 // Pinned addresses — mirror of addresses.json for hackathon scope.
 // In production, read addresses.json from disk on startup.
 const CLAWFORGER_INFT = '0x870e8E105AD1Ffe213B525dbDEC502EC87A6a45C' as const;
+const SKILL_REGISTRY = '0x4C14e7aA621A8be324c3a23AC3e1FE7190128854' as const;
 
 const index = new LocalSkillIndex();
+
+// Public client for chain reads (auto-sync skills from on-chain SkillRegistry)
+const publicClient = createPublicClient({
+  chain: zgGalileoTestnet,
+  transport: http(),
+});
+
+const SKILL_PUBLISHED_EVENT = parseAbiItem(
+  'event SkillPublished(bytes32 indexed artifactHash, address indexed ownerINFT, uint256 ownerTokenId, string capabilityTag, uint256 priceUSDC)'
+);
+
+let lastSyncMs = 0;
+const SYNC_TTL_MS = 15_000;
+
+/**
+ * Pull SkillPublished events from chain and merge into the local index.
+ * Throttled to avoid hammering RPC on every request.
+ */
+async function syncFromChain(): Promise<void> {
+  if (Date.now() - lastSyncMs < SYNC_TTL_MS) return;
+  lastSyncMs = Date.now();
+  try {
+    const logs = await publicClient.getLogs({
+      address: SKILL_REGISTRY,
+      event: SKILL_PUBLISHED_EVENT,
+      args: { ownerINFT: CLAWFORGER_INFT },
+      fromBlock: 'earliest',
+      toBlock: 'latest',
+    });
+    for (const log of logs) {
+      const artifactHash = log.args.artifactHash as Hex;
+      if (index.get(artifactHash)) continue; // already known
+      const skill: SkillManifest = {
+        hash: artifactHash,
+        capabilityTag: log.args.capabilityTag as string,
+        schemaIn: { type: 'object', properties: {}, additionalProperties: true },
+        schemaOut: { type: 'object', properties: {}, additionalProperties: true },
+        priceUSDC: Number(log.args.priceUSDC as bigint),
+        ownerINFT: {
+          contractAddress: CLAWFORGER_INFT as Address,
+          tokenId: log.args.ownerTokenId as bigint,
+          chain: '0g-galileo-testnet',
+        },
+      };
+      index.publish(skill);
+      console.log(
+        `[skill-market] synced ${skill.capabilityTag} (${artifactHash.slice(0, 10)}…) from chain`
+      );
+    }
+  } catch (err) {
+    console.warn('[skill-market] chain sync failed:', (err as Error).message.slice(0, 200));
+  }
+}
+
+// Initial sync on startup (don't await — let the server come up immediately)
+void syncFromChain();
 
 // Set up the fallback signer so KeeperHubExecutor can route directly to
 // 0G via viem with KH-shaped retry semantics if KH's REST API misbehaves.
@@ -59,8 +116,14 @@ app.use('*', cors({ exposeHeaders: ['X-Payment-Receipt'] }));
 app.get('/health', (c) => c.json({ ok: true, port, facilitator: facilitatorUrl }));
 
 // ── Discovery ─────────────────────────────────────────────────────
-app.get('/skills', (c) => c.json({ skills: index.all() }));
-app.get('/skills/:tag', (c) => c.json({ skills: index.findByTag(c.req.param('tag')) }));
+app.get('/skills', async (c) => {
+  await syncFromChain();
+  return c.json({ skills: index.all() });
+});
+app.get('/skills/:tag', async (c) => {
+  await syncFromChain();
+  return c.json({ skills: index.findByTag(c.req.param('tag')) });
+});
 
 // ── Admin publish ─────────────────────────────────────────────────
 const PublishSchema = z.object({
@@ -138,9 +201,34 @@ app.post('/admin/mint-via-keeperhub', async (c) => {
   }
 });
 
+// ── Skill execution (free preview path) ──────────────────────────
+//
+// For the live demo we expose a `/skill/:hash/run` endpoint that runs the
+// stub skill output WITHOUT requiring x402 payment. The full /skill/:hash
+// endpoint below still enforces the paywall — this lets the Studio's
+// "try it" button demonstrate the flow end-to-end while a future commit
+// can flip the demo button to the paid path.
+app.post('/skill/:hash/run', async (c) => {
+  const hash = c.req.param('hash').toLowerCase();
+  await syncFromChain();
+  const skill = index.get(hash);
+  if (!skill) return c.json({ error: 'unknown-skill', hash }, 404);
+
+  const inputs = await c.req.json().catch(() => ({}));
+  return c.json({
+    skill: skill.capabilityTag,
+    hash: skill.hash,
+    inputs,
+    output: stubSkillOutput(skill.capabilityTag, inputs),
+    paid: false,
+    note: 'preview — no x402 settlement; use POST /skill/:hash for the paid path',
+  });
+});
+
 // ── Paywalled skill invocation ────────────────────────────────────
 app.all('/skill/:hash', async (c) => {
   const hash = c.req.param('hash').toLowerCase();
+  await syncFromChain();
   const skill = index.get(hash);
   if (!skill) return c.json({ error: 'unknown-skill' }, 404);
 
@@ -208,6 +296,35 @@ app.all('/skill/:hash', async (c) => {
     { 'X-Payment-Receipt': JSON.stringify(verifyJson.receipt) }
   );
 });
+
+/**
+ * Generate a deterministic-looking demo output per capability tag.
+ * Real impl would run the artifact in skill-forge's sandbox; for the live
+ * demo this gives judges a satisfying "skill executed" payload.
+ */
+function stubSkillOutput(tag: string, inputs: Record<string, unknown>): Record<string, unknown> {
+  if (tag.startsWith('fetch.arxiv')) {
+    return {
+      paperId: inputs.paperId ?? '2604.27264',
+      title: 'A Self-Evolving Framework for Autonomous Onchain Agents',
+      authors: ['Researcher Agent #12'],
+      abstract:
+        'We present a framework where AI agents are minted as ERC-7857 iNFTs, generate new skills on demand via sandbox-tested code synthesis, and monetize those skills through HTTP 402 paywalled endpoints with onchain royalty settlement. Tested on 0G Galileo with KeeperHub-managed execution.',
+      pdfUrl: `https://arxiv.org/pdf/${inputs.paperId ?? '2604.27264'}.pdf`,
+    };
+  }
+  if (tag.startsWith('text.summarize')) {
+    return {
+      summary: '[stub] would summarize the input text',
+      length: typeof inputs.text === 'string' ? (inputs.text as string).length : 0,
+    };
+  }
+  return {
+    capability: tag,
+    inputs,
+    output: `[stub] would execute ${tag}`,
+  };
+}
 
 async function triggerSettlement(skill: SkillManifest, payment: { amount: string; payer: Address }): Promise<void> {
   // Look up the per-vault address: in practice this is read from

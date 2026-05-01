@@ -4,6 +4,7 @@ import { usePublicClient } from 'wagmi';
 import { Search, Coins, Play, Loader2, ExternalLink } from 'lucide-react';
 import { parseAbiItem, type Address, type Hex } from 'viem';
 import { ADDRESSES } from '@/lib/contracts';
+import { TryItModal, type TryItSkill } from '@/components/TryItModal';
 
 const EXPLORER = 'https://chainscan-galileo.0g.ai';
 
@@ -25,6 +26,7 @@ export default function Market() {
   const [query, setQuery] = useState('');
   const [skills, setSkills] = useState<MarketSkill[]>([]);
   const [loading, setLoading] = useState(false);
+  const [tryItSkill, setTryItSkill] = useState<TryItSkill | null>(null);
 
   useEffect(() => {
     if (!publicClient) return;
@@ -144,7 +146,18 @@ export default function Market() {
               >
                 <ExternalLink size={12} />
               </a>
-              <button className="btn">
+              <button
+                className="btn"
+                onClick={() =>
+                  setTryItSkill({
+                    hash: s.artifactHash,
+                    capabilityTag: s.capabilityTag,
+                    ownerTokenId: s.ownerTokenId,
+                    priceUSDC: s.priceUSDC,
+                    txHash: s.txHash,
+                  })
+                }
+              >
                 <Play size={14} /> try it
               </button>
             </div>
@@ -157,6 +170,8 @@ export default function Market() {
           No skills match "{query}".
         </div>
       )}
+
+      {tryItSkill && <TryItModal skill={tryItSkill} onClose={() => setTryItSkill(null)} />}
     </div>
   );
 }
