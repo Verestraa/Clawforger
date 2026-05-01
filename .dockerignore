@@ -1,0 +1,25 @@
+# Don't ship secrets or local-only stuff
+.env
+.env.*
+!.env.example
+
+# Build outputs
+node_modules
+**/node_modules
+**/dist
+**/.turbo
+**/out
+**/cache
+**/.vite
+**/.next
+
+# Git + IDE
+.git
+.gitignore
+.idea
+.vscode
+
+# Misc
+*.log
+.DS_Store
+broadcast
