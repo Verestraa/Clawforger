@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" fill="#F0F4FF" role="img" aria-label="Clawforger monochrome">
+  <path d="M36 138 L164 138 L156 158 L44 158 Z"/>
+  <path d="M28 118 L184 118 Q188 118 188 122 L188 130 Q188 134 184 134 L32 134 Q28 134 28 130 Z"/>
+  <path d="M32 118 Q32 56 100 44 Q168 56 168 118 L152 118 Q152 72 100 62 Q48 72 48 118 Z"/>
+  <path d="M152 118 L168 118 L168 100 Z"/>
+  <circle cx="74" cy="92" r="5"/>
+  <path d="M178 108 L188 100 L184 116 Z"/>
+</svg>

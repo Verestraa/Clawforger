@@ -1,6 +1,7 @@
 import { Outlet, Link, useLocation } from 'react-router';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { MintMUSDC } from './components/MintMUSDC';
+import { Logo } from './components/Logo';
 
 const NAV = [
   { to: '/', label: 'home' },
@@ -16,8 +17,8 @@ export default function App() {
     <div className="content-root min-h-screen flex flex-col">
       <header className="border-b border-zinc-900/60 px-6 py-4 flex items-center justify-between sticky top-0 bg-zinc-950/70 backdrop-blur-md z-10">
         <div className="flex items-center gap-8">
-          <Link to="/" className="font-bold tracking-tight text-lg flex items-center gap-2">
-            <span className="text-xl">🦞</span>
+          <Link to="/" className="font-bold tracking-tight text-lg flex items-center gap-2.5">
+            <Logo size={28} />
             <span><span className="text-accent">claw</span>forger</span>
           </Link>
           <nav className="flex gap-1 text-sm">

@@ -1,6 +1,7 @@
 import { Link } from 'react-router';
 import { ArrowRight, Zap, Shield, Coins, Brain, Network, Cpu } from 'lucide-react';
 import { useChainStats } from '@/hooks/useChainStats';
+import { Logo } from '@/components/Logo';
 
 export default function Landing() {
   const stats = useChainStats();
@@ -9,9 +10,9 @@ export default function Landing() {
     <div className="space-y-24 pb-20">
       {/* ─── Hero ─────────────────────────────────────────────── */}
       <section className="relative pt-20 md:pt-32 text-center space-y-8">
-        {/* Glowing lobster mascot */}
+        {/* Glowing claw + anvil mark */}
         <div className="flex justify-center">
-          <div className="glow-lobster text-7xl md:text-8xl">🦞</div>
+          <Logo size={140} glow title="Clawforger mark" />
         </div>
 
         <div className="space-y-3">

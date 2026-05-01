@@ -25,11 +25,12 @@
     "studio": "cd apps/studio && bun run dev"
   },
   "devDependencies": {
-    "turbo": "^2.3.0",
-    "typescript": "^5.6.3",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^22.10.0",
+    "prettier": "^3.4.0",
     "tsup": "^8.3.5",
-    "prettier": "^3.4.0"
+    "turbo": "^2.3.0",
+    "typescript": "^5.6.3"
   },
   "engines": {
     "bun": ">=1.2.0"
