@@ -1,12 +1,17 @@
 import { Link } from 'react-router';
 import { ArrowRight, Zap, Shield, Coins, Brain, Network } from 'lucide-react';
+import { useChainStats } from '@/hooks/useChainStats';
 
 export default function Landing() {
+  const stats = useChainStats();
   return (
     <div className="space-y-16">
       <section className="text-center space-y-6 pt-12">
         <div className="inline-flex pill text-accent border-accent/40">
           <Zap size={12} /> live on 0G Galileo testnet
+          {stats.blockHeight !== null && (
+            <span className="text-zinc-500 ml-2">block {stats.blockHeight.toLocaleString()}</span>
+          )}
         </div>
         <h1 className="text-5xl md:text-6xl font-bold leading-tight">
           self-evolving <span className="text-accent">iNFT agents</span>
@@ -29,9 +34,9 @@ export default function Landing() {
       </section>
 
       <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Stat label="agents minted" value="—" />
-        <Stat label="skills published" value="—" />
-        <Stat label="mUSDC settled" value="—" />
+        <Stat label="agents minted" value={fmtNumber(stats.agentsMinted)} />
+        <Stat label="skills published" value={fmtNumber(stats.skillsPublished)} />
+        <Stat label="mUSDC settled" value={fmtMUSDC(stats.mUSDCSettled)} />
       </section>
 
       <section className="grid md:grid-cols-2 gap-4">
@@ -63,10 +68,21 @@ export default function Landing() {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="card text-center">
-      <div className="text-3xl font-bold">{value}</div>
+      <div className="text-3xl font-bold tabular-nums">{value}</div>
       <div className="text-xs uppercase tracking-wider text-zinc-500 mt-1">{label}</div>
     </div>
   );
+}
+
+function fmtNumber(n: number | null): string {
+  if (n === null) return '…';
+  return n.toLocaleString();
+}
+
+function fmtMUSDC(n: bigint | null): string {
+  if (n === null) return '…';
+  if (n === 0n) return '0';
+  return (Number(n) / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
 function Feature({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) {

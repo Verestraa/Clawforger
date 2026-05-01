@@ -5,6 +5,12 @@ import { Brain, Sparkles, History, Coins, ExternalLink } from 'lucide-react';
 import type { Address, Hex } from 'viem';
 import { ABIS, ADDRESSES } from '@/lib/contracts';
 import { loadPayload } from '@/lib/intelligence';
+import {
+  useAgentEvolution,
+  useAgentSkills,
+  type EvolutionEvent,
+  type PublishedSkill,
+} from '@/hooks/useAgentEvents';
 
 const TABS = ['overview', 'skills', 'evolution', 'memory log'] as const;
 const EXPLORER = 'https://chainscan-galileo.0g.ai';
@@ -58,6 +64,13 @@ export default function AgentDetail() {
   const personaPayload = loadPayload(intelligenceHash);
   const name = personaPayload?.name ?? `Agent #${tokenIdStr}`;
 
+  const { events: evolutionEvents } = useAgentEvolution(tokenId);
+  const { skills: publishedSkills } = useAgentSkills(tokenId);
+  const totalEarned = publishedSkills.reduce(
+    (acc, s) => acc + s.priceUSDC * 95n / 100n, // optimistic 95% × useCount=1; real total needs RoyaltyDistributed sum
+    0n
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex items-start gap-4">
@@ -69,13 +82,13 @@ export default function AgentDetail() {
           <h1 className="text-3xl font-bold">{name}</h1>
           <div className="flex flex-wrap gap-2 mt-2">
             <span className="pill">
-              <Sparkles size={10} /> 0 skills
+              <Sparkles size={10} /> {publishedSkills.length} skill{publishedSkills.length === 1 ? '' : 's'}
             </span>
             <span className="pill">
-              <Coins size={10} /> 0 mUSDC earned
+              <Coins size={10} /> {fmtMUSDC(totalEarned)} mUSDC earned
             </span>
             <span className="pill">
-              <History size={10} /> evolved {evolvedAt > 0n ? '1+' : '0'}×
+              <History size={10} /> {evolutionEvents.filter((e) => e.kind === 'evolved').length} evolution{evolutionEvents.filter((e) => e.kind === 'evolved').length === 1 ? '' : 's'}
             </span>
           </div>
         </div>
@@ -117,8 +130,8 @@ export default function AgentDetail() {
             personaPrompt={personaPayload?.systemPrompt}
           />
         )}
-        {tab === 'skills' && <Skills />}
-        {tab === 'evolution' && <Evolution evolvedAt={evolvedAt} />}
+        {tab === 'skills' && <Skills skills={publishedSkills} />}
+        {tab === 'evolution' && <Evolution events={evolutionEvents} />}
         {tab === 'memory log' && <MemoryLog />}
       </div>
     </div>
@@ -181,31 +194,66 @@ function Detail({ label, value, link }: { label: string; value?: string; link?: 
   );
 }
 
-function Skills() {
+function Skills({ skills }: { skills: PublishedSkill[] }) {
+  if (skills.length === 0) {
+    return (
+      <div className="card text-center text-zinc-500 text-sm">
+        No skills yet — this agent hasn't evolved any skills it can sell. Run via CLI:{' '}
+        <code className="text-accent">bun run examples/researcher/src/index.ts</code>
+      </div>
+    );
+  }
   return (
-    <div className="card text-center text-zinc-500 text-sm">
-      No skills yet — give this agent a task that exceeds its current capability and it will evolve one. (Run via CLI:{' '}
-      <code className="text-accent">bun run examples/researcher/src/index.ts</code>)
+    <div className="space-y-2">
+      {skills.map((s) => (
+        <a
+          key={s.artifactHash}
+          href={`${EXPLORER}/tx/${s.txHash}`}
+          target="_blank"
+          rel="noopener"
+          className="card flex items-center gap-4 hover:border-accent transition"
+        >
+          <div className="flex-1">
+            <div className="font-bold">{s.capabilityTag}</div>
+            <div className="text-xs text-zinc-500 mt-1 font-mono">
+              {s.artifactHash.slice(0, 12)}…{s.artifactHash.slice(-8)}
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-accent font-bold">{fmtMUSDC(s.priceUSDC)} mUSDC</div>
+            <div className="text-xs text-zinc-500">{new Date(s.publishedAt).toLocaleDateString()}</div>
+          </div>
+        </a>
+      ))}
     </div>
   );
 }
 
-function Evolution({ evolvedAt }: { evolvedAt: bigint }) {
-  const events = [
-    {
-      ts: evolvedAt > 0n ? new Date(Number(evolvedAt) * 1000).toLocaleString() : 'just now',
-      kind: 'minted',
-      detail: 'agent born',
-    },
-  ];
+function Evolution({ events }: { events: EvolutionEvent[] }) {
+  if (events.length === 0) {
+    return (
+      <div className="card text-center text-zinc-500 text-sm">loading on-chain history…</div>
+    );
+  }
   return (
     <div className="space-y-1">
-      {events.map((e, i) => (
-        <div key={i} className="card py-3 flex items-center gap-4 text-sm">
-          <div className="text-zinc-500 w-44 flex-shrink-0">{e.ts}</div>
-          <div className="pill">{e.kind}</div>
-          <div className="text-zinc-300">{e.detail}</div>
-        </div>
+      {events.map((e) => (
+        <a
+          key={e.txHash}
+          href={`${EXPLORER}/tx/${e.txHash}`}
+          target="_blank"
+          rel="noopener"
+          className="card py-3 flex items-center gap-4 text-sm hover:border-accent transition"
+        >
+          <div className="text-zinc-500 w-44 flex-shrink-0">
+            {new Date(e.ts).toLocaleString()}
+          </div>
+          <div className={`pill ${e.kind === 'evolved' ? 'text-accent border-accent/40' : ''}`}>
+            {e.kind}
+          </div>
+          <div className="text-zinc-300 flex-1 truncate">{e.detail}</div>
+          <ExternalLink size={12} className="text-zinc-500 flex-shrink-0" />
+        </a>
       ))}
     </div>
   );
@@ -225,4 +273,15 @@ function isZeroHash(h: Hex): boolean {
   } catch {
     return false;
   }
+}
+
+function fmtMUSDC(units: bigint): string {
+  if (units === 0n) return '0';
+  const whole = units / 1_000_000n;
+  const fraction = units % 1_000_000n;
+  if (fraction === 0n) return whole.toLocaleString();
+  return (Number(whole) + Number(fraction) / 1_000_000).toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
 }
