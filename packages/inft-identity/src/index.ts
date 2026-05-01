@@ -88,20 +88,40 @@ export async function mintAgent(opts: MintAgentOpts): Promise<MintAgentResult> {
   });
 
   const txHash = await opts.signer.writeContract(request);
-  // 0G's testnet RPC sometimes lags receipt indexing; pad timeout heavily.
-  const receipt = await publicClient.waitForTransactionReceipt({
-    hash: txHash,
-    timeout: 180_000,
-    pollingInterval: 3_000,
-    retryCount: 60,
-    retryDelay: 3_000,
-    confirmations: 1,
-  });
+  // 0G's public RPC intermittently lags receipt indexing — use our own
+  // tolerant poller instead of viem's waitForTransactionReceipt.
+  const receipt = await waitForReceiptResilient(publicClient, txHash);
 
   // 4. Extract tokenId from the AgentMinted event
   const tokenId = extractTokenIdFromReceipt(receipt);
 
   return { tokenId, intelligenceHash, skillManifestHash, txHash };
+}
+
+/**
+ * Custom receipt poller. Retries getTransactionReceipt every 3s for up to 3 min,
+ * swallowing TransactionReceiptNotFoundError. Survives transient RPC outages.
+ */
+async function waitForReceiptResilient(
+  client: PublicClient,
+  hash: Hex,
+  maxWaitMs = 180_000
+): Promise<{ logs: readonly { topics: readonly Hex[]; data: Hex }[] }> {
+  const start = Date.now();
+  // Initial delay so the tx has a moment to propagate
+  await new Promise((r) => setTimeout(r, 2_000));
+
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const r = await client.getTransactionReceipt({ hash });
+      // viem returns null/undefined or throws if not found, depending on transport
+      if (r) return r as any;
+    } catch {
+      /* not found yet — keep polling */
+    }
+    await new Promise((r) => setTimeout(r, 3_000));
+  }
+  throw new Error(`receipt-not-found-after-${maxWaitMs}ms: ${hash}`);
 }
 
 function extractTokenIdFromReceipt(receipt: {
@@ -196,14 +216,13 @@ export async function evolveAgent(opts: EvolveAgentOpts): Promise<EvolveAgentRes
   });
 
   const txHash = await opts.signer.writeContract(request);
-  await publicClient.waitForTransactionReceipt({
-    hash: txHash,
-    timeout: 180_000,
-    pollingInterval: 3_000,
-    retryCount: 60,
-    retryDelay: 3_000,
-    confirmations: 1,
-  });
+  // Best-effort receipt wait — non-blocking on failure for evolveAgent
+  // since callers don't need event data from the receipt here.
+  try {
+    await waitForReceiptResilient(publicClient, txHash, 60_000);
+  } catch (err) {
+    console.warn('[inft-identity] evolveAgent receipt wait timed out, returning anyway:', (err as Error).message);
+  }
 
   return { txHash, newSkillManifestHash };
 }
@@ -254,14 +273,11 @@ export async function transferWithReencryption(
     account,
   });
   const txHash = await opts.signer.writeContract(request);
-  await publicClient.waitForTransactionReceipt({
-    hash: txHash,
-    timeout: 180_000,
-    pollingInterval: 3_000,
-    retryCount: 60,
-    retryDelay: 3_000,
-    confirmations: 1,
-  });
+  try {
+    await waitForReceiptResilient(publicClient, txHash, 60_000);
+  } catch (err) {
+    console.warn('[inft-identity] transfer receipt wait timed out, returning anyway:', (err as Error).message);
+  }
 
   return { txHash, newIntelligenceHash };
 }
