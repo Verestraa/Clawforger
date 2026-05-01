@@ -196,7 +196,14 @@ export async function evolveAgent(opts: EvolveAgentOpts): Promise<EvolveAgentRes
   });
 
   const txHash = await opts.signer.writeContract(request);
-  await publicClient.waitForTransactionReceipt({ hash: txHash });
+  await publicClient.waitForTransactionReceipt({
+    hash: txHash,
+    timeout: 180_000,
+    pollingInterval: 3_000,
+    retryCount: 60,
+    retryDelay: 3_000,
+    confirmations: 1,
+  });
 
   return { txHash, newSkillManifestHash };
 }
@@ -247,7 +254,14 @@ export async function transferWithReencryption(
     account,
   });
   const txHash = await opts.signer.writeContract(request);
-  await publicClient.waitForTransactionReceipt({ hash: txHash });
+  await publicClient.waitForTransactionReceipt({
+    hash: txHash,
+    timeout: 180_000,
+    pollingInterval: 3_000,
+    retryCount: 60,
+    retryDelay: 3_000,
+    confirmations: 1,
+  });
 
   return { txHash, newIntelligenceHash };
 }
