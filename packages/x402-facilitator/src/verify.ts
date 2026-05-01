@@ -121,35 +121,28 @@ export async function verifyPayment(
     transport: http(opts.rpcUrl),
   });
 
+  // 0G Galileo doesn't have Multicall3 deployed, so we make two sequential
+  // eth_call reads instead of viem's multicall.
   try {
-    const [allowance, balance] = (await publicClient.multicall({
-      contracts: [
-        {
-          address: payment.asset as Address,
-          abi: ERC20_ABI,
-          functionName: 'allowance',
-          args: [payment.payer as Address, payment.payTo as Address],
-        },
-        {
-          address: payment.asset as Address,
-          abi: ERC20_ABI,
-          functionName: 'balanceOf',
-          args: [payment.payer as Address],
-        },
-      ],
-    })) as Array<{ result?: bigint; status: 'success' | 'failure' }>;
-
-    if (allowance.status !== 'success' || allowance.result === undefined) {
-      return { ok: false, reason: 'allowance-read-failed' };
-    }
-    if (balance.status !== 'success' || balance.result === undefined) {
-      return { ok: false, reason: 'balance-read-failed' };
-    }
     const required = BigInt(payment.amount);
-    if (allowance.result < required) {
+
+    const allowance = (await publicClient.readContract({
+      address: payment.asset as Address,
+      abi: ERC20_ABI,
+      functionName: 'allowance',
+      args: [payment.payer as Address, payment.payTo as Address],
+    })) as bigint;
+    if (allowance < required) {
       return { ok: false, reason: 'insufficient-allowance' };
     }
-    if (balance.result < required) {
+
+    const balance = (await publicClient.readContract({
+      address: payment.asset as Address,
+      abi: ERC20_ABI,
+      functionName: 'balanceOf',
+      args: [payment.payer as Address],
+    })) as bigint;
+    if (balance < required) {
       return { ok: false, reason: 'insufficient-balance' };
     }
   } catch (err) {
