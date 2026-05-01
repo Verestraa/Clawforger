@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="Clawforger">
-  <!-- anvil base (deeper orange, structural shadow) -->
-  <path d="M36 138 L164 138 L156 158 L44 158 Z" fill="#7C2D12"/>
+  <!-- anvil base (deep purple, structural shadow) -->
+  <path d="M36 138 L164 138 L156 158 L44 158 Z" fill="#581C87"/>
   <!-- anvil top slab (lower jaw) -->
   <path d="M28 118 L184 118 Q188 118 188 122 L188 130 Q188 134 184 134 L32 134 Q28 134 28 130 Z" fill="#F0F4FF"/>
   <!-- claw upper jaw (open pincer arc) -->
@@ -8,7 +8,7 @@
   <!-- pincer tip bite -->
   <path d="M152 118 L168 118 L168 100 Z" fill="#F0F4FF"/>
   <!-- eye dot (personality) -->
-  <circle cx="74" cy="92" r="5" fill="#F97316"/>
+  <circle cx="74" cy="92" r="5" fill="#B75FFF"/>
   <!-- ember (single triangular spark from the strike point) -->
-  <path d="M178 108 L188 100 L184 116 Z" fill="#F97316"/>
+  <path d="M178 108 L188 100 L184 116 Z" fill="#B75FFF"/>
 </svg>

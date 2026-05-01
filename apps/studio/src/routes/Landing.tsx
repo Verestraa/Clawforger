@@ -2,6 +2,7 @@ import { Link } from 'react-router';
 import { ArrowRight, Zap, Shield, Coins, Brain, Network, Cpu } from 'lucide-react';
 import { useChainStats } from '@/hooks/useChainStats';
 import { Logo } from '@/components/Logo';
+import { SponsorStrip } from '@/components/SponsorStrip';
 
 export default function Landing() {
   const stats = useChainStats();
@@ -108,13 +109,9 @@ export default function Landing() {
       </section>
 
       {/* ─── Sponsor strip ───────────────────────────────────── */}
-      <section className="text-center space-y-4">
+      <section className="text-center space-y-6">
         <p className="text-xs uppercase tracking-[0.4em] text-zinc-500">// powered by</p>
-        <div className="flex justify-center gap-8 flex-wrap">
-          <SponsorLogo name="0G" url="https://0g.ai" />
-          <SponsorLogo name="KeeperHub" url="https://keeperhub.com" />
-          <SponsorLogo name="x402" url="https://x402.org" />
-        </div>
+        <SponsorStrip />
       </section>
     </div>
   );
@@ -147,19 +144,6 @@ function Line({ prefix, cmd, comment }: { prefix: string; cmd: string; comment?:
       <span className="text-zinc-300">{cmd}</span>
       {comment && <span className="text-zinc-600 text-xs ml-auto"># {comment}</span>}
     </div>
-  );
-}
-
-function SponsorLogo({ name, url }: { name: string; url: string }) {
-  return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener"
-      className="text-zinc-400 hover:text-accent transition font-bold tracking-wider"
-    >
-      {name}
-    </a>
   );
 }
 

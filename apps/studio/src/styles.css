@@ -19,7 +19,7 @@
     @apply tracking-tight;
   }
   ::selection {
-    background: rgba(249, 115, 22, 0.85);
+    background: rgba(183, 95, 255, 0.85);
     color: #050810;
   }
 }
@@ -32,8 +32,8 @@
     @apply inline-flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800/80 px-4 py-2 text-sm font-medium backdrop-blur-sm hover:border-accent hover:bg-zinc-700 transition;
   }
   .btn-primary {
-    @apply bg-accent text-zinc-950 border-accent hover:bg-orange-400;
-    box-shadow: 0 0 30px -5px rgba(249, 115, 22, 0.5);
+    @apply bg-accent text-white border-accent hover:bg-accent-light;
+    box-shadow: 0 0 30px -5px rgba(183, 95, 255, 0.5);
   }
   .pill {
     @apply inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-900/60 backdrop-blur-sm px-3 py-1 text-xs;
@@ -56,8 +56,8 @@
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 1200px 800px at 50% -10%, rgba(249, 115, 22, 0.18), transparent 70%),
-    radial-gradient(ellipse 800px 600px at 90% 100%, rgba(249, 115, 22, 0.06), transparent 70%),
+    radial-gradient(ellipse 1200px 800px at 50% -10%, rgba(183, 95, 255, 0.18), transparent 70%),
+    radial-gradient(ellipse 800px 600px at 90% 100%, rgba(183, 95, 255, 0.06), transparent 70%),
     #050810;
 }
 
@@ -71,9 +71,9 @@
     radial-gradient(1px 1px at 90px 40px, rgba(255, 255, 255, 0.7), transparent),
     radial-gradient(2px 2px at 130px 80px, rgba(255, 255, 255, 0.45), transparent),
     radial-gradient(1px 1px at 160px 120px, rgba(255, 255, 255, 0.75), transparent),
-    radial-gradient(2px 2px at 200px 60px, rgba(249, 115, 22, 0.7), transparent),
+    radial-gradient(2px 2px at 200px 60px, rgba(183, 95, 255, 0.7), transparent),
     radial-gradient(1px 1px at 250px 150px, rgba(255, 255, 255, 0.5), transparent),
-    radial-gradient(2px 2px at 300px 40px, rgba(249, 115, 22, 0.45), transparent),
+    radial-gradient(2px 2px at 300px 40px, rgba(183, 95, 255, 0.45), transparent),
     radial-gradient(1px 1px at 75px 165px, rgba(255, 255, 255, 0.6), transparent),
     radial-gradient(1.5px 1.5px at 220px 180px, rgba(255, 255, 255, 0.55), transparent),
     radial-gradient(1px 1px at 320px 110px, rgba(255, 255, 255, 0.7), transparent);
@@ -100,8 +100,8 @@
 
 /* Glowing accent for the lobster mascot in the hero */
 .glow-lobster {
-  filter: drop-shadow(0 0 30px rgba(249, 115, 22, 0.6))
-          drop-shadow(0 0 60px rgba(249, 115, 22, 0.3));
+  filter: drop-shadow(0 0 30px rgba(183, 95, 255, 0.6))
+          drop-shadow(0 0 60px rgba(183, 95, 255, 0.3));
 }
 
 /* Ambient hover-glow for primary cards */
@@ -109,6 +109,6 @@
   transition: box-shadow 0.25s ease, border-color 0.25s ease;
 }
 .glow-on-hover:hover {
-  box-shadow: 0 0 30px -5px rgba(249, 115, 22, 0.25);
-  border-color: rgba(249, 115, 22, 0.4);
+  box-shadow: 0 0 30px -5px rgba(183, 95, 255, 0.25);
+  border-color: rgba(183, 95, 255, 0.4);
 }

@@ -29,9 +29,10 @@ import {
   deriveKeyFromSignature,
 } from '@clawforger/memory-0g';
 import { evolve } from '@clawforger/skill-forge';
-import { type Address, type Hex, createWalletClient, http } from 'viem';
+import { type Address, type Hex, createPublicClient, createWalletClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { zgGalileoTestnet } from '@clawforger/core';
+import SkillRegistryAbi from '@clawforger/core/abis/SkillRegistry.json' assert { type: 'json' };
 
 import { RESEARCHER_PERSONALITY } from './personality';
 
@@ -53,6 +54,7 @@ async function main() {
     process.exit(1);
   }
   const inftAddress = chainAddrs.ClawforgerINFT as Address;
+  const skillRegistryAddress = chainAddrs.SkillRegistry as Address;
 
   // ── 2. Wallet ────────────────────────────────────────────────────
   const pk = process.env.DEPLOYER_PRIVATE_KEY as Hex | undefined;
@@ -62,6 +64,7 @@ async function main() {
   }
   const account = privateKeyToAccount(pk);
   const wallet = createWalletClient({ account, chain: zgGalileoTestnet, transport: http() });
+  const publicClient = createPublicClient({ chain: zgGalileoTestnet, transport: http() });
 
   console.log(`[researcher] using wallet ${account.address}`);
 
@@ -102,7 +105,33 @@ async function main() {
     fallbackSigner: wallet,
   });
 
-  const agent = new Agent(inft, memory, inference, executor);
+  // Hook: when skill-forge succeeds, register the new skill on-chain via
+  // SkillRegistry.publishSkill so the studio's marketplace can discover it.
+  // This is what closes the loop between the off-chain self-evolution and
+  // the on-chain economy that the demo video pitches.
+  const onSkillPublish = async (skill: { hash: Hex; capabilityTag: string; priceUSDC: number }) => {
+    console.log(`[researcher] publishing skill ${skill.capabilityTag} on-chain...`);
+    try {
+      const { request } = await publicClient.simulateContract({
+        address: skillRegistryAddress,
+        abi: SkillRegistryAbi as readonly unknown[],
+        functionName: 'publishSkill',
+        args: [skill.hash, tokenId, skill.capabilityTag, BigInt(skill.priceUSDC)],
+        account,
+      });
+      const txHash = await wallet.writeContract(request);
+      console.log(`[researcher] ✓ skill registered (tx ${txHash})`);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes('AlreadyPublished')) {
+        console.log(`[researcher] skill already on-chain — skipping`);
+      } else {
+        console.warn(`[researcher] skill publish failed:`, msg.slice(0, 200));
+      }
+    }
+  };
+
+  const agent = new Agent(inft, memory, inference, executor, [], { onSkillPublish });
 
   // ── 6. Task it cannot solve ─────────────────────────────────────
   // Tight success criterion — requires JSON output with both fields.

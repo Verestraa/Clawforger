@@ -18,8 +18,8 @@ interface LogoProps {
   title?: string;
 }
 
-const ACCENT = '#F97316';
-const ANVIL = '#7C2D12';
+const ACCENT = '#B75FFF';
+const ANVIL = '#581C87';
 const FG = '#F0F4FF';
 
 export function Logo({ size = 32, mono = false, glow = false, className, title }: LogoProps) {

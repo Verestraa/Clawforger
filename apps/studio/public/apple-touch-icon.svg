@@ -1,13 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Clawforger app icon">
   <defs>
     <radialGradient id="bg" cx="50%" cy="60%" r="60%">
-      <stop offset="0%" stop-color="#1a1208"/>
+      <stop offset="0%" stop-color="#1d0e2e"/>
       <stop offset="70%" stop-color="#07080f"/>
       <stop offset="100%" stop-color="#050810"/>
     </radialGradient>
     <radialGradient id="glow" cx="50%" cy="60%" r="55%">
-      <stop offset="0%" stop-color="#F97316" stop-opacity="0.22"/>
-      <stop offset="55%" stop-color="#F97316" stop-opacity="0"/>
+      <stop offset="0%" stop-color="#B75FFF" stop-opacity="0.28"/>
+      <stop offset="55%" stop-color="#B75FFF" stop-opacity="0"/>
     </radialGradient>
     <clipPath id="rounded">
       <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220"/>
@@ -18,12 +18,12 @@
     <rect x="0" y="0" width="1024" height="1024" fill="url(#glow)"/>
     <!-- mark, scaled and centered: 200×200 viewBox → translate (262, 262), scale 2.5 -->
     <g transform="translate(262 262) scale(2.5)">
-      <path d="M36 138 L164 138 L156 158 L44 158 Z" fill="#7C2D12"/>
+      <path d="M36 138 L164 138 L156 158 L44 158 Z" fill="#581C87"/>
       <path d="M28 118 L184 118 Q188 118 188 122 L188 130 Q188 134 184 134 L32 134 Q28 134 28 130 Z" fill="#F0F4FF"/>
       <path d="M32 118 Q32 56 100 44 Q168 56 168 118 L152 118 Q152 72 100 62 Q48 72 48 118 Z" fill="#F0F4FF"/>
       <path d="M152 118 L168 118 L168 100 Z" fill="#F0F4FF"/>
-      <circle cx="74" cy="92" r="5" fill="#F97316"/>
-      <path d="M178 108 L188 100 L184 116 Z" fill="#F97316"/>
+      <circle cx="74" cy="92" r="5" fill="#B75FFF"/>
+      <path d="M178 108 L188 100 L184 116 Z" fill="#B75FFF"/>
     </g>
   </g>
 </svg>

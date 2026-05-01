@@ -9,8 +9,9 @@ module.exports = {
       },
       colors: {
         accent: {
-          DEFAULT: '#f97316', // orange — claw fire
-          muted: '#7c2d12',
+          DEFAULT: '#B75FFF', // 0G Purple 1 — lighter brand accent
+          muted: '#581C87',   // Tailwind purple-900 — anvil structural
+          light: '#CB8AFF',   // 0G Purple 2 — hover state
         },
       },
     },
