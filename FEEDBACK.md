@@ -40,7 +40,31 @@ Honest, actionable feedback from a builder who shipped Clawforger end-to-end dur
 
 ### Reproducible bugs
 
-(Will add as I encounter — none blocking so far in the framework integration.)
+1. **Documented `POST /workflows/create` returns 404.** Per docs at https://docs.keeperhub.com/api/workflows the path for creating a workflow is `POST /api/workflows/create` against base `https://app.keeperhub.com/api`. Reproduction:
+
+   ```bash
+   curl -i -X POST \
+     -H "Authorization: Bearer kh_..." \
+     -H "Content-Type: application/json" \
+     -d '{"name":"test","description":"test"}' \
+     https://app.keeperhub.com/api/workflows/create
+   # → HTTP 404
+   # → <pre>Cannot POST /workflows/create</pre>
+   ```
+
+   The same Express-style 404 ("Cannot POST /…") implies a route mismatch, not auth. We fell back to direct viem submission with KeeperHub-shaped retry semantics in our framework so the demo path remains functional, but the documented programmatic-create endpoint appears not to exist (or to live at a different path). **Request:** working `curl` example in the docs alongside the JSON shape, and ideally a single `POST /workflows` that takes the full `{ name, description, nodes, edges }` graph in one shot rather than the create→PATCH dance.
+
+2. **Workflow node graph schema (`nodes` / `edges` shape) isn't publicly documented.** Even when create succeeds, populating it via PATCH requires the internal node format (e.g. `{ type: "trigger" | "action", subtype, config, position }`). Without this, programmatic workflow creation is effectively blocked — every dynamic mint we attempted from our framework ended up using the viem fallback path because we couldn't construct a valid node graph. **Request:** publish the JSON schema for nodes + edges, or expose a `nodes-from-actions[]` helper on the API that takes the simpler action list and synthesizes the graph server-side.
+
+3. **No discoverable "create workflow from compiled JSON" endpoint.** Our framework compiles `ExecutionIntent` → `{ trigger, actions, retry, notifications }`. We'd love an endpoint that accepts that compact shape and creates+runs in one call:
+
+   ```
+   POST /api/workflows/run-once
+   { name, trigger: {...}, actions: [...], retry: {...} }
+   → { runId, txHash? }
+   ```
+
+   This is the missing primitive for "ad-hoc workflow execution from agent code." Without it, agents must either (a) pre-create persistent workflows via the web UI, or (b) use the create→PATCH→execute lifecycle with the undocumented node schema. Both options break the "agent builds workflows on demand" promise.
 
 ---
 
