@@ -105,11 +105,22 @@ async function main() {
   const agent = new Agent(inft, memory, inference, executor);
 
   // ── 6. Task it cannot solve ─────────────────────────────────────
+  // Tight success criterion — requires JSON output with both fields.
+  // The MockInference default text response can't satisfy this; only an
+  // evolved skill that returns structured JSON will pass. This forces
+  // the self-evolution path to fire end-to-end.
   const task: Task = {
     id: 'task-1-arxiv',
     description: 'Summarize arxiv paper 2604.27264',
     inputs: { paperId: '2604.27264' },
-    successCriteria: { kind: 'stringContains', s: 'abstract' },
+    successCriteria: {
+      kind: 'jsonSchemaMatch',
+      schema: {
+        type: 'object',
+        properties: { abstract: { type: 'string' } },
+        required: ['abstract'],
+      },
+    },
   };
 
   console.log(`[researcher] running task: ${task.description}`);

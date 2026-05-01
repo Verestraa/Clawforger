@@ -25,6 +25,7 @@ import {
   type WalletClient,
   bytesToHex,
   createPublicClient,
+  decodeEventLog,
   http,
 } from 'viem';
 import ClawforgerINFTAbi from '@clawforger/core/abis/ClawforgerINFT.json' assert { type: 'json' };
@@ -101,14 +102,27 @@ export async function mintAgent(opts: MintAgentOpts): Promise<MintAgentResult> {
   return { tokenId, intelligenceHash, skillManifestHash, txHash };
 }
 
-function extractTokenIdFromReceipt(receipt: { logs: readonly { topics: readonly Hex[] }[] }): bigint {
-  // AgentMinted(uint256 indexed tokenId, ...) — tokenId is in topics[1]
-  // For the hackathon scope we trust the deployer-mint-then-find pattern.
-  const log = receipt.logs.find((l) => l.topics.length >= 2);
-  if (!log || !log.topics[1]) {
-    throw new Error('mint-event-not-found');
+function extractTokenIdFromReceipt(receipt: {
+  logs: readonly { topics: readonly Hex[]; data: Hex }[];
+}): bigint {
+  // Decode each log against the iNFT ABI and pick AgentMinted.
+  // (Don't use topics[1] heuristic — Transfer(from, to, tokenId) emits first
+  //  and has from=0x0 in topics[1], producing a bogus tokenId of 0n.)
+  for (const log of receipt.logs) {
+    try {
+      const decoded = decodeEventLog({
+        abi: ClawforgerINFTAbi as readonly unknown[],
+        data: log.data,
+        topics: log.topics as [Hex, ...Hex[]],
+      });
+      if (decoded.eventName === 'AgentMinted') {
+        return (decoded.args as { tokenId: bigint }).tokenId;
+      }
+    } catch {
+      // Not a log decodable by this ABI — skip
+    }
   }
-  return BigInt(log.topics[1]);
+  throw new Error('AgentMinted-event-not-found-in-receipt');
 }
 
 // ──────────────────────────────────────────────────────────────────
