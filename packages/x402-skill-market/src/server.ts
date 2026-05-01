@@ -27,12 +27,13 @@ import { KeeperHubExecutor } from '@clawforger/keeperhub-execute';
 
 const port = Number(process.env.PORT ?? 3700);
 const facilitatorUrl = process.env.X402_FACILITATOR_URL ?? 'http://localhost:3701';
-const mUSDCAddress = (process.env.MUSDC_ADDRESS ?? '0x0000000000000000000000000000000000000000') as Address;
 
 // Pinned addresses — mirror of addresses.json for hackathon scope.
 // In production, read addresses.json from disk on startup.
 const CLAWFORGER_INFT = '0xeaC74aAD5AE551d80910AFC19537B928eEb9438A' as const;
 const SKILL_REGISTRY = '0x1fCbd3fFf244e9A77AD86bFB55BA44CE34fF3E55' as const;
+const MUSDC_ADDRESS = '0x96041fFF185173e2650bE8344a96c072Df036f9A' as const;
+const mUSDCAddress: Address = MUSDC_ADDRESS;
 
 const index = new LocalSkillIndex();
 
