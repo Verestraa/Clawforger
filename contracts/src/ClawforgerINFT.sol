@@ -6,6 +6,7 @@ import { IERC4906 } from "@openzeppelin/contracts/interfaces/IERC4906.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import { Ownable2Step, Ownable } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
+import { Base64 } from "@openzeppelin/contracts/utils/Base64.sol";
 
 import { RoyaltyVault } from "./RoyaltyVault.sol";
 
@@ -150,21 +151,52 @@ contract ClawforgerINFT is ERC721, Ownable2Step, IERC4906 {
         _transfer(msg.sender, to, tokenId);
     }
 
-    /// @notice tokenURI returns a 0G Storage URI scheme pointing at the iNFT's
-    ///         current metadata blob. The Studio + 0G explorers resolve this.
+    /// @notice tokenURI returns an inline base64-encoded JSON data URI per
+    ///         ERC-721 metadata standard. We embed the og-storage:// pointer as
+    ///         an `external_url` so explorers without 0G integration still
+    ///         render the rich metadata, while 0G-native consumers can resolve
+    ///         the underlying encrypted blob.
     function tokenURI(uint256 tokenId) public view override returns (string memory) {
         if (_ownerOf(tokenId) == address(0)) revert UnknownToken();
-        // og-storage://<intelligenceHash>?manifest=<skillManifestHash>&mem=<memoryRootHash>
         AgentData memory a = agents[tokenId];
+
+        string memory ogStorageUri = string.concat(
+            "og-storage://", _bytes32ToHex(a.intelligenceHash),
+            "?manifest=", _bytes32ToHex(a.skillManifestHash),
+            "&mem=", _bytes32ToHex(a.memoryRootHash)
+        );
+
+        bytes memory json = abi.encodePacked(
+            '{"name":"Clawforger Agent #', tokenId.toString(),
+            '","description":"A self-evolving iNFT agent on 0G Galileo. Intelligence + skills + memory live encrypted on 0G Storage. Every onchain action via KeeperHub. Skills paywalled via x402.",',
+            '"image":"data:image/svg+xml;base64,', Base64.encode(_renderSvg(tokenId)), '",',
+            '"external_url":"', ogStorageUri, '",',
+            '"attributes":[',
+                '{"trait_type":"Intelligence Hash","value":"0x', _bytes32ToHex(a.intelligenceHash), '"},',
+                '{"trait_type":"Skill Manifest Hash","value":"0x', _bytes32ToHex(a.skillManifestHash), '"},',
+                '{"trait_type":"Memory Root","value":"0x', _bytes32ToHex(a.memoryRootHash), '"},',
+                '{"trait_type":"Royalty Vault","value":"', Strings.toHexString(a.royaltyVault), '"},',
+                '{"display_type":"date","trait_type":"Last Evolved","value":', a.evolvedAt.toString(), '}',
+            ']}'
+        );
+
         return string.concat(
-            "og-storage://",
-            _bytes32ToHex(a.intelligenceHash),
-            "?manifest=",
-            _bytes32ToHex(a.skillManifestHash),
-            "&mem=",
-            _bytes32ToHex(a.memoryRootHash),
-            "&tokenId=",
-            tokenId.toString()
+            "data:application/json;base64,",
+            Base64.encode(json)
+        );
+    }
+
+    /// @dev Generate a tiny SVG so the iNFT has an image in any explorer.
+    function _renderSvg(uint256 tokenId) private pure returns (bytes memory) {
+        return abi.encodePacked(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">',
+                '<rect width="400" height="400" fill="#0a0a0a"/>',
+                '<circle cx="200" cy="180" r="80" fill="none" stroke="#f97316" stroke-width="3"/>',
+                '<circle cx="200" cy="180" r="40" fill="#f97316" opacity="0.3"/>',
+                '<text x="200" y="190" font-family="monospace" font-size="32" font-weight="700" fill="#f97316" text-anchor="middle">CLAW</text>',
+                '<text x="200" y="290" font-family="monospace" font-size="18" fill="#a1a1aa" text-anchor="middle">Agent #', tokenId.toString(), '</text>',
+                '<text x="200" y="320" font-family="monospace" font-size="11" fill="#52525b" text-anchor="middle">self-evolving on 0G</text>',
+            '</svg>'
         );
     }
 
