@@ -30,6 +30,7 @@ import type { Address, Hex } from 'viem';
 import { ABIS, ADDRESSES } from '@/lib/contracts';
 import { loadPayload } from '@/lib/intelligence';
 import { ComputePoolBadge } from '@/components/ComputePoolBadge';
+import { AgentAvatar, PERSONA_TONE } from '@/components/AgentAvatar';
 
 const MARKET_URL =
   (import.meta.env.VITE_X402_MARKET_URL as string | undefined) ?? 'http://localhost:3700';
@@ -205,12 +206,23 @@ export default function AgentChat() {
 
       {/* Header */}
       <div className="card flex items-start gap-4">
-        <div className="rounded-xl bg-accent/10 p-3 text-accent">
-          <Brain size={24} />
-        </div>
+        {tokenId !== undefined ? (
+          <AgentAvatar tokenId={tokenId} name={agentName} size={64} />
+        ) : (
+          <div className="rounded-xl bg-accent/10 p-3 text-accent">
+            <Brain size={24} />
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="text-xs text-zinc-500">live chat with iNFT</div>
+            {PERSONA_TONE[agentName] && (
+              <span
+                className={`text-[10px] uppercase font-mono px-2 py-0.5 rounded border ${PERSONA_TONE[agentName]}`}
+              >
+                {agentName.toLowerCase()}
+              </span>
+            )}
             <ComputePoolBadge variant="inline" />
             <span
               className="inline-flex items-center gap-1.5 text-[10px] text-emerald-400/80 font-mono"

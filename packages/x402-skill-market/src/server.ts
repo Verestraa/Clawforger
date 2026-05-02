@@ -38,6 +38,8 @@ import {
   decrypt,
 } from '@clawforger/memory-0g';
 import { detectPersona, buildPersonaCodegenHint } from '@clawforger/core';
+import { getAgentWallet } from '@clawforger/core/agent-wallet';
+import { erc20Abi } from 'viem';
 
 const port = Number(process.env.PORT ?? 3700);
 const facilitatorUrl = process.env.X402_FACILITATOR_URL ?? 'http://localhost:3701';
@@ -258,14 +260,86 @@ app.get('/admin/compute-balance', async (c) => {
   }
 });
 
+// ── Per-agent deterministic wallet ───────────────────────────────
+// Each iNFT (by tokenId) has its own signing wallet derived from
+// AGENT_WALLET_SEED. mUSDC sent to that address belongs to the agent —
+// the server signs on its behalf when the agent buys skills via x402.
+const AGENT_WALLET_SEED = process.env.AGENT_WALLET_SEED as Hex | undefined;
+if (!AGENT_WALLET_SEED) {
+  console.warn(
+    '[skill-market] AGENT_WALLET_SEED not set — per-agent wallets disabled. ' +
+      'Set it in .env to enable purchase_skill / per-agent funding.'
+  );
+}
+
+app.get('/admin/agent/:tokenId/wallet', async (c) => {
+  const tokenIdStr = c.req.param('tokenId');
+  if (!AGENT_WALLET_SEED) {
+    return c.json(
+      { ok: false, reason: 'agent-wallets-disabled', info: 'Set AGENT_WALLET_SEED in server env' },
+      503
+    );
+  }
+  let tokenId: bigint;
+  try {
+    tokenId = BigInt(tokenIdStr);
+  } catch {
+    return c.json({ ok: false, reason: 'invalid-tokenId' }, 400);
+  }
+  try {
+    const wallet = getAgentWallet(tokenId, AGENT_WALLET_SEED);
+    const [native, musdcRaw] = await Promise.all([
+      publicClient.getBalance({ address: wallet.address }),
+      publicClient.readContract({
+        address: mUSDCAddress,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [wallet.address],
+      }) as Promise<bigint>,
+    ]);
+    return c.json({
+      ok: true,
+      tokenId: tokenIdStr,
+      address: wallet.address,
+      native0G: Number(native) / 1e18,
+      mUSDC: Number(musdcRaw) / 1e6,
+      mUSDCRaw: musdcRaw.toString(),
+      info:
+        'This is the deterministic sub-wallet for iNFT #' +
+        tokenIdStr +
+        '. Send mUSDC to this address to give the agent buying power. ' +
+        'The server signs purchases on the agent\'s behalf using a key derived ' +
+        'from AGENT_WALLET_SEED + tokenId.',
+    });
+  } catch (err) {
+    return c.json(
+      { ok: false, reason: (err as Error).message.slice(0, 200) },
+      500
+    );
+  }
+});
+
+/** Serialize a SkillManifest to JSON-safe form (BigInt → string). */
+function serializeSkill(s: SkillManifest): Record<string, unknown> {
+  return {
+    ...s,
+    ownerINFT: {
+      ...s.ownerINFT,
+      tokenId: String(s.ownerINFT.tokenId),
+    },
+  };
+}
+
 // ── Discovery ─────────────────────────────────────────────────────
 app.get('/skills', async (c) => {
   await syncFromChain();
-  return c.json({ skills: index.all() });
+  return c.json({ skills: index.all().map(serializeSkill) });
 });
 app.get('/skills/:tag', async (c) => {
   await syncFromChain();
-  return c.json({ skills: index.findByTag(c.req.param('tag')) });
+  return c.json({
+    skills: index.findByTag(c.req.param('tag')).map(serializeSkill),
+  });
 });
 
 // ── Admin publish ─────────────────────────────────────────────────
@@ -318,6 +392,47 @@ const MAX_FORGE_PER_REQUEST = 1; // self-evolution is slow + on-chain; cap per c
 function toolNameFor(skill: SkillManifest): string {
   return skill.capabilityTag.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
 }
+
+/**
+ * Meta-tool: buy a skill from another agent on the marketplace.
+ *
+ * The buyer's deterministic sub-wallet (derived from AGENT_WALLET_SEED +
+ * tokenId) signs an mUSDC.transfer to the producer's RoyaltyVault, then
+ * the skill artifact is fetched + decrypted + executed and the result is
+ * returned. This is the agent-to-agent commerce primitive.
+ */
+const PURCHASE_TOOL_NAME = 'purchase_skill';
+const PURCHASE_TOOL_DEF = {
+  type: 'function' as const,
+  function: {
+    name: PURCHASE_TOOL_NAME,
+    description:
+      'Pay another agent for one of THEIR skills using mUSDC. Use this when ' +
+      'the user wants data your own iNFT does not have a skill for, but a different ' +
+      'agent does. The buy is a real on-chain mUSDC transfer to the producer\'s ' +
+      'RoyaltyVault — your agent\'s wallet must be funded. After settlement the ' +
+      'skill executes and the result is returned. Do NOT use this for skills your ' +
+      'own iNFT already owns.',
+    parameters: {
+      type: 'object',
+      properties: {
+        capabilityTag: {
+          type: 'string',
+          description:
+            'The capability tag (e.g. "price.crypto", "wiki.lookup") of the skill to purchase. ' +
+            'Must match a skill another agent has published.',
+        },
+        inputs: {
+          type: 'object',
+          description:
+            'Inputs to pass to the purchased skill. Must satisfy the skill\'s schemaIn.',
+          additionalProperties: true,
+        },
+      },
+      required: ['capabilityTag', 'inputs'],
+    },
+  },
+};
 
 /** Meta-tool the LLM uses to evolve a brand-new skill mid-conversation. */
 const EVOLVE_TOOL_NAME = 'evolve_new_skill';
@@ -545,6 +660,12 @@ app.post('/admin/chat', async (c) => {
     // Always expose the meta-tool when the chat is scoped to a specific
     // agent — that's the only context where forging a skill is meaningful.
     if (agentTokenId !== undefined) skillTools.push(EVOLVE_TOOL_DEF);
+    // Expose purchase_skill if per-agent wallets are enabled — lets this
+    // agent buy data from OTHER agents on the marketplace using its own
+    // mUSDC. Hidden when AGENT_WALLET_SEED isn't set (no signing wallet).
+    if (agentTokenId !== undefined && AGENT_WALLET_SEED) {
+      skillTools.push(PURCHASE_TOOL_DEF);
+    }
     return { tools: skillTools, scoped };
   }
   let { tools, scoped: scopedSkills } = rebuildTools();
@@ -610,6 +731,61 @@ app.post('/admin/chat', async (c) => {
       ].join('\n')
     : '';
 
+  // Persona detection up-front so subsequent system blocks can be tuned.
+  // Specifically, an Analyst (consumer) gets a "prefer purchase over forge"
+  // directive baked into the system prompt; producers don't.
+  const detectedPersona = detectPersona(parsed.data.systemPrompt ?? null);
+  const isConsumer = detectedPersona?.isConsumer === true;
+
+  // Marketplace listing of skills owned by OTHER agents (purchasable via
+  // purchase_skill). Helps the LLM know what's available for purchase
+  // without having to discover skills by guessing.
+  const otherSkills =
+    agentTokenId !== undefined
+      ? index.all().filter((s) => s.ownerINFT.tokenId !== agentTokenId)
+      : [];
+  const marketplaceBlock =
+    otherSkills.length > 0 && AGENT_WALLET_SEED
+      ? [
+          ``,
+          `# Marketplace — skills owned by OTHER agents (call \`purchase_skill\` to buy)`,
+          ``,
+          `These skills belong to other iNFTs. You can buy them with mUSDC from`,
+          `your own agent's deterministic sub-wallet. Use \`purchase_skill\` with`,
+          `the capabilityTag — your wallet signs an mUSDC.transfer to the producer's`,
+          `RoyaltyVault, then the skill executes and returns its result.`,
+          ``,
+          ...otherSkills.map((s) => {
+            const priceMUSDC = (s.priceUSDC / 1_000_000).toFixed(4);
+            return `  - capability: "${s.capabilityTag}" — owner: iNFT #${s.ownerINFT.tokenId} — price: ${priceMUSDC} mUSDC`;
+          }),
+        ].join('\n')
+      : '';
+
+  // Consumer-bias directive — only attached when the persona is Analyst.
+  // Tells the model to PREFER purchase over forge, and to be transparent
+  // about what was paid to whom. Without this, DeepSeek's default reflex
+  // is to forge, which defeats the marketplace economy demo.
+  const consumerDirective = isConsumer
+    ? [
+        ``,
+        `# CONSUMER MODE (you are an Analyst)`,
+        ``,
+        `Your job is to BUY data from other agents on the marketplace, NOT to`,
+        `forge new skills. The default flow is:`,
+        ``,
+        `  1. Read the marketplace listing above`,
+        `  2. Pick the skill that matches the user's request`,
+        `  3. Call \`purchase_skill\` with the capabilityTag and required inputs`,
+        `  4. Quote the result + the cost (mUSDC paid + producer iNFT) back to`,
+        `     the user with full transparency`,
+        ``,
+        `Only call \`evolve_new_skill\` if NO marketplace skill matches AND the`,
+        `user explicitly asks you to forge one. If marketplace lookup is`,
+        `ambiguous, ask the user which skill to buy rather than forging.`,
+      ].join('\n')
+    : '';
+
   if (scopedSkills.length > 0) {
     const lines = scopedSkills.map((s) => {
       const priceMUSDC = (s.priceUSDC / 1_000_000).toFixed(4);
@@ -630,6 +806,8 @@ app.post('/admin/chat', async (c) => {
       `shown above. Buyers pay the listed price in mUSDC via HTTP 402; royalties`,
       `auto-split 95/5 to your owner / protocol on-chain. If you have zero skills`,
       `published, say so plainly — do not invent.`,
+      marketplaceBlock,
+      consumerDirective,
       evolveDirective,
     ].join('\n');
     messages.push({ role: 'system', content: ctxBody });
@@ -637,12 +815,14 @@ app.post('/admin/chat', async (c) => {
     messages.push({
       role: 'system',
       content:
-        `You currently have NO on-chain skills published yet.\n` +
-        `If the user asks for a capability, call the \`evolve_new_skill\` tool to ` +
-        `forge one mid-conversation: skill-forge will generate code via 0G Compute, ` +
-        `sandbox-test it, upload the artifact to 0G Storage, and publish on-chain ` +
-        `via SkillRegistry. After it succeeds, the new tool will appear in your ` +
-        `tool list and you can call it immediately.` +
+        `You currently have NO on-chain skills of your own published yet.\n` +
+        `If the user asks for a capability, you have TWO options:\n` +
+        `  1. \`purchase_skill\` — buy an existing skill from another agent on the marketplace ` +
+        `(see the listing below). Cheaper + faster than forging.\n` +
+        `  2. \`evolve_new_skill\` — forge a new on-chain skill from scratch via 0G Compute. ` +
+        `Use only when no existing skill matches the user's request.` +
+        marketplaceBlock +
+        consumerDirective +
         evolveDirective,
     });
   }
@@ -698,6 +878,66 @@ app.post('/admin/chat', async (c) => {
           parsedArgs = JSON.parse(call.function.arguments || '{}');
         } catch {
           parsedArgs = { _raw: call.function.arguments };
+        }
+
+        // ── Meta-tool: agent buys a skill from another agent ─────────
+        if (call.function.name === PURCHASE_TOOL_NAME) {
+          if (agentTokenId === undefined) {
+            const errMsg = 'purchase_skill requires agentTokenId in chat request';
+            invocations.push({
+              name: call.function.name,
+              capabilityTag: 'meta:purchase_skill',
+              skillHash: '',
+              arguments: parsedArgs,
+              output: null,
+              error: errMsg,
+            });
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: JSON.stringify({ error: errMsg }),
+            });
+            continue;
+          }
+          const a = parsedArgs as {
+            capabilityTag?: string;
+            inputs?: Record<string, unknown>;
+          };
+          if (!a.capabilityTag) {
+            const errMsg = 'purchase_skill requires capabilityTag';
+            invocations.push({
+              name: call.function.name,
+              capabilityTag: 'meta:purchase_skill',
+              skillHash: '',
+              arguments: parsedArgs,
+              output: null,
+              error: errMsg,
+            });
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: JSON.stringify({ error: errMsg }),
+            });
+            continue;
+          }
+          const buyResult = await purchaseSkillForAgent(agentTokenId, {
+            capabilityTag: a.capabilityTag,
+            inputs: a.inputs ?? {},
+          });
+          invocations.push({
+            name: call.function.name,
+            capabilityTag: buyResult.capabilityTag ?? a.capabilityTag,
+            skillHash: buyResult.skillHash ?? '',
+            arguments: parsedArgs,
+            output: buyResult,
+            error: buyResult.ok ? undefined : buyResult.reason,
+          });
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: JSON.stringify(buyResult),
+          });
+          continue;
         }
 
         // ── Meta-tool: agent decides to evolve a brand-new skill ─────
@@ -762,17 +1002,15 @@ app.post('/admin/chat', async (c) => {
           }
 
           const mem = await getMemoryFor(agentTokenId);
-          // Detect persona from the agent's system prompt — Researcher /
-          // Writer / Trader. Threads its preferred no-auth APIs + scope
-          // restrictions into the codegen prompt so a Trader can't forge
-          // an arxiv-fetcher and a Writer doesn't pick a paid API.
-          const persona = detectPersona(parsed.data.systemPrompt ?? null);
-          const personaContext = persona
-            ? buildPersonaCodegenHint(persona)
+          // Reuse the persona detected up-front for the system prompt; this
+          // forwards the persona's preferred no-auth APIs + scope into the
+          // codegen prompt so a Trader can't forge an arxiv-fetcher etc.
+          const personaContext = detectedPersona
+            ? buildPersonaCodegenHint(detectedPersona)
             : undefined;
-          if (persona) {
+          if (detectedPersona) {
             console.log(
-              `[skill-forge] persona=${persona.name} → APIs: ${persona.preferredApis.map((a) => a.name).join(', ')}`
+              `[skill-forge] persona=${detectedPersona.name} → APIs: ${detectedPersona.preferredApis.map((a) => a.name).join(', ') || '(consumer — no preferred APIs)'}`
             );
           }
           const forgeResult = await forgeSkillForAgent(
@@ -1230,6 +1468,178 @@ app.post('/skill/:hash', async (c) => {
  */
 const SKILL_EXEC_TIMEOUT_MS = 15_000;
 const skillCodeCache = new Map<string, string>();
+
+/**
+ * Purchase a skill from another agent — full on-chain mUSDC settlement.
+ *
+ * Flow:
+ *   1. Find the skill by capabilityTag in the marketplace registry
+ *   2. Derive the buyer's deterministic sub-wallet from AGENT_WALLET_SEED
+ *   3. Pre-flight: balance + gas checks
+ *   4. Sign + submit mUSDC.transfer(producerVault, price) from the buyer
+ *   5. Wait for receipt
+ *   6. Execute the skill artifact
+ *   7. Return { result, txHash, paid, vault }
+ *
+ * Self-purchase (buyer == skill.ownerINFT.tokenId) is rejected — agents
+ * shouldn't be paying themselves.
+ */
+async function purchaseSkillForAgent(
+  buyerTokenId: bigint,
+  args: { capabilityTag: string; inputs: Record<string, unknown> }
+): Promise<{
+  ok: boolean;
+  capabilityTag?: string;
+  skillHash?: Hex;
+  paidMUSDC?: number;
+  txHash?: Hex;
+  toVault?: Address;
+  result?: Record<string, unknown>;
+  reason?: string;
+}> {
+  if (!AGENT_WALLET_SEED) {
+    return { ok: false, reason: 'agent-wallets-disabled (set AGENT_WALLET_SEED)' };
+  }
+  // Look up skill — match capability tag, ignore exact case + dot/underscore
+  // since OpenAI tool name sanitization changes . to _.
+  const want = args.capabilityTag.toLowerCase().replace(/_/g, '.');
+  const skills = index.all();
+  const skill = skills.find(
+    (s) => s.capabilityTag.toLowerCase() === want
+  );
+  if (!skill) {
+    return {
+      ok: false,
+      reason: `skill-not-found: no on-chain skill with capabilityTag="${args.capabilityTag}"`,
+    };
+  }
+  if (skill.ownerINFT.tokenId === buyerTokenId) {
+    return {
+      ok: false,
+      reason:
+        'self-purchase-rejected: this skill is owned by your own iNFT — call it directly instead of buying it',
+    };
+  }
+
+  const buyer = getAgentWallet(buyerTokenId, AGENT_WALLET_SEED);
+  const buyerAccount = privateKeyToAccount(buyer.privateKey);
+  const buyerWallet = createWalletClient({
+    account: buyerAccount,
+    chain: zgGalileoTestnet,
+    transport: http(),
+  });
+
+  const price = BigInt(skill.priceUSDC);
+
+  // Pre-flight: mUSDC balance
+  const balance = (await publicClient.readContract({
+    address: mUSDCAddress,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [buyer.address],
+  })) as bigint;
+  if (balance < price) {
+    return {
+      ok: false,
+      reason:
+        `insufficient-mUSDC: agent #${buyerTokenId} has ${(Number(balance) / 1e6).toFixed(4)} mUSDC, ` +
+        `skill costs ${(Number(price) / 1e6).toFixed(4)} mUSDC. ` +
+        `Fund via: bun run scripts/fund-agent.ts ${buyerTokenId} 1.0`,
+    };
+  }
+
+  // Pre-flight: gas
+  const gas = await publicClient.getBalance({ address: buyer.address });
+  if (gas < BigInt(1e15)) {
+    // < 0.001 0G
+    return {
+      ok: false,
+      reason:
+        `insufficient-gas: agent #${buyerTokenId} has ${(Number(gas) / 1e18).toFixed(4)} 0G, ` +
+        `needs ≥ 0.001 0G to submit the purchase tx. ` +
+        `Top up via: bun run scripts/fund-agent.ts ${buyerTokenId} 0 0.05`,
+    };
+  }
+
+  // Producer's vault
+  let vault: Address;
+  try {
+    vault = await getVaultForAgent(skill.ownerINFT.tokenId);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `vault-lookup-failed for producer iNFT #${skill.ownerINFT.tokenId}: ${(err as Error).message.slice(0, 120)}`,
+    };
+  }
+
+  console.log(
+    `[purchase] agent #${buyerTokenId} → ${skill.capabilityTag} (#${skill.ownerINFT.tokenId} vault ${vault.slice(0, 10)}…) for ${(Number(price) / 1e6).toFixed(4)} mUSDC`
+  );
+
+  // Sign + submit transfer from buyer.
+  //
+  // 0G testnet RPC is slow on receipt retrieval — viem's
+  // waitForTransactionReceipt frequently times out before the receipt is
+  // visible, even though the tx lands. Poll buyer's balance directly:
+  // once it has decreased by `price` (or below) we know the transfer
+  // settled. More reliable than receipt polling on this chain.
+  let txHash: Hex;
+  try {
+    const { request } = await publicClient.simulateContract({
+      address: mUSDCAddress,
+      abi: erc20Abi,
+      functionName: 'transfer',
+      args: [vault, price],
+      account: buyerAccount,
+    });
+    txHash = await buyerWallet.writeContract(request);
+    console.log(`[purchase] tx submitted: ${txHash}`);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `mUSDC-tx-submit-failed: ${(err as Error).message.slice(0, 200)}`,
+    };
+  }
+
+  // Poll: wait for buyer's balance to drop by `price` (or timeout 90s).
+  const deadline = Date.now() + 90_000;
+  let landed = false;
+  while (Date.now() < deadline) {
+    const cur = (await publicClient.readContract({
+      address: mUSDCAddress,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [buyer.address],
+    })) as bigint;
+    if (cur <= balance - price) {
+      landed = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
+  if (!landed) {
+    return {
+      ok: false,
+      reason: `mUSDC-tx-not-confirmed-in-90s: tx ${txHash} submitted but buyer balance didn't drop. Re-check on chainscan.`,
+    };
+  }
+  console.log(`[purchase] tx confirmed via balance poll: ${txHash}`);
+
+  // Execute the skill
+  const result =
+    (await runForgedSkill(skill.hash, args.inputs)) ??
+    stubSkillOutput(skill.capabilityTag, args.inputs);
+
+  return {
+    ok: true,
+    capabilityTag: skill.capabilityTag,
+    skillHash: skill.hash,
+    paidMUSDC: Number(price) / 1e6,
+    txHash,
+    toVault: vault,
+    result,
+  };
+}
 
 async function runForgedSkill(
   skillHash: Hex,

@@ -10,6 +10,8 @@ export {
   buildPersonaCodegenHint,
 } from './personas';
 export type { PersonaConfig, PersonaApi } from './personas';
+export { getAgentWallet, getAgentAddress } from './agent-wallet';
+export type { AgentWallet } from './agent-wallet';
 
 // Re-export ABIs as JSON modules — consumers `import abi from '@clawforger/core/abis/ClawforgerINFT.json'`
 // (path-based, see package.json `exports`)

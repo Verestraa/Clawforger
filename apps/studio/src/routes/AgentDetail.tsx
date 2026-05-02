@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 import { useReadContract } from 'wagmi';
 import { Link } from 'react-router';
 import {
-  Brain,
   Sparkles,
   History,
   Coins,
@@ -26,6 +25,8 @@ import {
   type EvolutionEvent,
   type PublishedSkill,
 } from '@/hooks/useAgentEvents';
+import { AgentWalletPanel } from '@/components/AgentWalletPanel';
+import { AgentAvatar, PERSONA_TONE, PERSONA_SCOPE } from '@/components/AgentAvatar';
 
 const TABS = ['overview', 'skills', 'evolution', 'memory log'] as const;
 const EXPLORER = 'https://chainscan-galileo.0g.ai';
@@ -92,12 +93,22 @@ export default function AgentDetail() {
   return (
     <div className="space-y-6">
       <div className="flex items-start gap-4">
-        <div className="rounded-xl bg-accent/10 p-4 text-accent">
-          <Brain size={32} />
-        </div>
-        <div className="flex-1">
-          <div className="text-xs text-zinc-500">agent #{tokenIdStr}</div>
-          <h1 className="text-3xl font-bold">{name}</h1>
+        <AgentAvatar tokenId={tokenId!} name={name} size={88} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 text-xs text-zinc-500">
+            <span>iNFT #{tokenIdStr}</span>
+            {PERSONA_TONE[name] && (
+              <span
+                className={`text-[10px] uppercase font-mono px-2 py-0.5 rounded border ${PERSONA_TONE[name]}`}
+              >
+                {name.toLowerCase()}
+              </span>
+            )}
+            {PERSONA_SCOPE[name] && (
+              <span className="text-[10px] text-zinc-500">— {PERSONA_SCOPE[name]}</span>
+            )}
+          </div>
+          <h1 className="text-3xl font-bold mt-1">{name}</h1>
           <div className="flex flex-wrap gap-2 mt-2">
             <span className="pill">
               <Sparkles size={10} /> {publishedSkills.length} skill{publishedSkills.length === 1 ? '' : 's'}
@@ -155,6 +166,7 @@ export default function AgentDetail() {
             evolvedAt={evolvedAt}
             ownerAddress={ownerAddress as Address | undefined}
             personaPrompt={personaPayload?.systemPrompt}
+            tokenIdStr={tokenIdStr}
           />
         )}
         {tab === 'skills' && <Skills skills={publishedSkills} />}
@@ -173,6 +185,7 @@ function Overview({
   evolvedAt,
   ownerAddress,
   personaPrompt,
+  tokenIdStr,
 }: {
   intelligenceHash: Hex;
   skillManifestHash: Hex;
@@ -181,11 +194,13 @@ function Overview({
   evolvedAt: bigint;
   ownerAddress?: Address;
   personaPrompt?: string;
+  tokenIdStr: string;
 }) {
   return (
     <div className="grid md:grid-cols-2 gap-4">
+      <AgentWalletPanel tokenId={tokenIdStr} />
       <Detail label="owner" value={ownerAddress} link={ownerAddress ? `${EXPLORER}/address/${ownerAddress}` : undefined} />
-      <Detail label="royalty vault" value={royaltyVault} link={`${EXPLORER}/address/${royaltyVault}`} />
+      <Detail label="royalty vault (receives skill royalties)" value={royaltyVault} link={`${EXPLORER}/address/${royaltyVault}`} />
       <Detail label="intelligence hash" value={intelligenceHash} />
       <Detail label="skill manifest hash" value={skillManifestHash} />
       <Detail label="memory root" value={isZeroHash(memoryRootHash) ? '— (no memory yet)' : memoryRootHash} />

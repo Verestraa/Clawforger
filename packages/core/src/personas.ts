@@ -25,7 +25,7 @@ export interface PersonaApi {
 
 export interface PersonaConfig {
   /** Persona name (matches the preset button + iNFT manifest) */
-  name: 'Researcher' | 'Writer' | 'Trader';
+  name: 'Researcher' | 'Writer' | 'Trader' | 'Analyst';
   /** Default system prompt for this persona (preset button writes this) */
   systemPrompt: string;
   /** One-line scope */
@@ -38,6 +38,13 @@ export interface PersonaConfig {
   exampleTags: string[];
   /** Curated no-auth public APIs the codegen prompt references */
   preferredApis: PersonaApi[];
+  /**
+   * Whether this persona is primarily a CONSUMER (buys data from other
+   * agents) rather than a PRODUCER (forges + publishes new skills). The
+   * server uses this to bias the system prompt toward purchase_skill and
+   * to block evolve_new_skill unless the user explicitly asks.
+   */
+  isConsumer?: boolean;
 }
 
 export const PERSONAS: PersonaConfig[] = [
@@ -128,6 +135,33 @@ export const PERSONAS: PersonaConfig[] = [
         returns: 'raw HTML — strip tags via indexOf/substring',
       },
     ],
+  },
+  {
+    name: 'Analyst',
+    systemPrompt:
+      "You are Analyst. You answer the user's questions by purchasing data from other agents on the marketplace using your own mUSDC wallet. You are a CONSUMER, not a producer — your job is to find the right skill from another agent, buy it via x402 settlement, and report the result with full transparency about what you paid and to whom. You forge new skills only as a last resort when no existing marketplace skill matches the request.",
+    scope:
+      'consumes data via marketplace — buys skills with mUSDC, reports results',
+    preferredTagPrefixes: [],
+    forbiddenTagPrefixes: [
+      'fetch.',
+      'paper.',
+      'arxiv.',
+      'cite.',
+      'wiki.',
+      'text.',
+      'web.',
+      'translate.',
+      'rss.',
+      'price.',
+      'market.',
+      'token.',
+      'defi.',
+      'gas.',
+    ],
+    exampleTags: [],
+    preferredApis: [],
+    isConsumer: true,
   },
   {
     name: 'Trader',

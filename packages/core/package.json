@@ -23,6 +23,10 @@
       "types": "./src/personas.ts",
       "import": "./src/personas.ts"
     },
+    "./agent-wallet": {
+      "types": "./src/agent-wallet.ts",
+      "import": "./src/agent-wallet.ts"
+    },
     "./abis/*": "./src/abis/*"
   },
   "scripts": {
