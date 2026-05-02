@@ -20,6 +20,8 @@
   "dependencies": {
     "@clawforger/core": "workspace:*",
     "@clawforger/keeperhub-execute": "workspace:*",
+    "@clawforger/memory-0g": "workspace:*",
+    "@clawforger/skill-forge": "workspace:*",
     "hono": "^4.6.0",
     "viem": "^2.21.0",
     "zod": "^3.23.0"

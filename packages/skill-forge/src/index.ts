@@ -26,6 +26,13 @@ export interface EvolveOpts {
   encryptionKey: CryptoKey;
   maxAttempts?: number;
   onAttempt?: (attempt: number, code: string, result: sandbox.SandboxRunResult) => void;
+  /**
+   * Override the LLM-suggested capability tag. Used when the caller already
+   * knows what tag the new skill should be filed under (e.g. mid-chat
+   * forging where the user asked for "fetch.youtube" specifically) and
+   * doesn't want MockInference's fallback heuristic to override it.
+   */
+  forceTag?: string;
 }
 
 export interface EvolveResult {
@@ -33,6 +40,10 @@ export interface EvolveResult {
   skill?: SkillManifest;
   attempts: number;
   reason?: string;
+  /** True if iNFT.evolveAgent metadata pointer was updated on-chain. */
+  metadataUpdated?: boolean;
+  /** When metadataUpdated=false, why it was skipped (e.g. NotTokenOwner). */
+  metadataError?: string;
 }
 
 export async function evolve(opts: EvolveOpts): Promise<EvolveResult> {
@@ -73,29 +84,55 @@ export async function evolve(opts: EvolveOpts): Promise<EvolveResult> {
     // 4. Build the new skill manifest
     const skill: SkillManifest = {
       hash: artifactHash,
-      capabilityTag: codegen.suggestedTag,
+      capabilityTag: opts.forceTag ?? codegen.suggestedTag,
       schemaIn: codegen.schemaIn,
       schemaOut: codegen.schemaOut,
       priceUSDC: 50_000, // 0.05 mUSDC default
       ownerINFT: opts.agent.inft,
     };
 
-    // 5. Update the iNFT metadata on-chain
+    // 5. Update the iNFT metadata on-chain.
+    // SOFT-FAIL: only the iNFT owner can call evolveAgent. When the
+    // forge runs server-side (e.g. mid-chat), the server's signer is
+    // typically *not* the user's wallet — the call reverts with
+    // NotTokenOwner. The skill artifact is already on 0G Storage and
+    // the marketplace cares about SkillRegistry.publishSkill (step 6),
+    // so we proceed even if the metadata pointer can't be updated yet.
+    // A future tx signed by the actual owner can backfill the hashes.
     const newSkills = [...opts.agent.skills, skill];
-    await evolveAgent({
-      inft: opts.agent.inft,
-      newSkillManifest: newSkills,
-      newMemoryRoot: artifactHash as Hex, // simplest pointer for hackathon
-      signer: opts.signer,
-      storage: opts.storage,
-      encryptionKey: opts.encryptionKey,
-    });
+    let metadataUpdated = true;
+    let metadataError: string | undefined;
+    try {
+      await evolveAgent({
+        inft: opts.agent.inft,
+        newSkillManifest: newSkills,
+        newMemoryRoot: artifactHash as Hex, // simplest pointer for hackathon
+        signer: opts.signer,
+        storage: opts.storage,
+        encryptionKey: opts.encryptionKey,
+      });
+    } catch (err) {
+      metadataUpdated = false;
+      metadataError = (err as Error).message.slice(0, 200);
+      console.warn(
+        `[skill-forge] evolveAgent skipped (${metadataError.split('\n')[0]}) — ` +
+          `proceeding with SkillRegistry publish so the marketplace still picks up the skill.`
+      );
+    }
 
-    // 6. Update local cache + fire hook (Execution agent registers the x402 endpoint)
+    // 6. Update local cache + fire hook (Execution agent registers the x402 endpoint).
+    // Runs regardless of step 5 outcome — this is what actually surfaces
+    // the new skill to the marketplace + chat tool list.
     opts.agent.registerSkill(skill);
     await opts.agent.hooks.onSkillPublish?.(skill);
 
-    return { ok: true, skill, attempts: attempt };
+    return {
+      ok: true,
+      skill,
+      attempts: attempt,
+      metadataUpdated,
+      metadataError,
+    };
   }
 
   return { ok: false, attempts: maxAttempts, reason: 'no-candidate-passed-sandbox' };

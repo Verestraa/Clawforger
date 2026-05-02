@@ -24,10 +24,12 @@ import type { Task } from '@clawforger/core';
 import { mintAgent } from '@clawforger/inft-identity';
 import { KeeperHubExecutor } from '@clawforger/keeperhub-execute';
 import {
-  InMemoryZGStorage,
+  FileBackedZGStorage,
   ZGMemory,
   deriveKeyFromSignature,
 } from '@clawforger/memory-0g';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { evolve } from '@clawforger/skill-forge';
 import { type Address, type Hex, createPublicClient, createWalletClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -72,11 +74,21 @@ async function main() {
   // For the example, we use the private key itself as the IKM. In production
   // the wallet signs the keyDerivationChallenge() and that signature is the IKM.
   const encryptionKey = await deriveKeyFromSignature(pk);
-  const storage = new InMemoryZGStorage();
+  // Share the same on-disk store the marketplace server uses so memory log
+  // entries (skill publishes, evolutions, mint events) appear in the studio's
+  // /agents/<id> "memory log" tab. Both processes derive identical keys from
+  // the same DEPLOYER_PRIVATE_KEY, so the namespace + decryption line up.
+  const memoryFile =
+    process.env.MEMORY_FILE ??
+    resolve(fileURLToPath(new URL('../../../data/agent-memory.json', import.meta.url)));
+  const storage = new FileBackedZGStorage(memoryFile);
+  console.log(`[researcher] memory store: ${memoryFile}`);
   // ↑ Replace with RealZGStorageClient once @0gfoundation/0g-ts-sdk is wired.
 
   // ── 4. Mint or load iNFT ────────────────────────────────────────
   let tokenId: bigint;
+  let mintTxHash: string | undefined;
+  let freshMint = false;
   if (process.env.RESEARCHER_TOKEN_ID) {
     tokenId = BigInt(process.env.RESEARCHER_TOKEN_ID);
     console.log(`[researcher] loading existing iNFT #${tokenId}`);
@@ -92,12 +104,31 @@ async function main() {
       chain: '0g-galileo-testnet',
     });
     tokenId = minted.tokenId;
+    mintTxHash = minted.txHash;
+    freshMint = true;
     console.log(`[researcher] minted iNFT #${tokenId} (tx ${minted.txHash})`);
   }
 
   // ── 5. Construct the agent ──────────────────────────────────────
   const inft = { contractAddress: inftAddress, tokenId, chain: '0g-galileo-testnet' as const };
   const memory = new ZGMemory({ storage, encryptionKey, namespace: `agents/${tokenId}` });
+
+  // Append the mint event to the agent's memory log so the studio's
+  // memory-log tab shows the genesis entry.
+  if (freshMint) {
+    await memory.logAppend({
+      kind: 'agent.minted',
+      data: {
+        tokenId: String(tokenId),
+        owner: account.address,
+        intelligenceHashSource: 'researcher-personality',
+        mintTxHash,
+        chain: '0g-galileo-testnet',
+        summary: `Agent #${tokenId} minted to ${account.address.slice(0, 8)}…`,
+      },
+      ts: Date.now(),
+    });
+  }
 
   // Real TEE-verified inference via 0G Compute Network. Falls back to
   // MockInference if the broker is unreachable or no providers are
@@ -122,6 +153,9 @@ async function main() {
   // the on-chain economy that the demo video pitches.
   const onSkillPublish = async (skill: { hash: Hex; capabilityTag: string; priceUSDC: number }) => {
     console.log(`[researcher] publishing skill ${skill.capabilityTag} on-chain...`);
+    let txHash: string | undefined;
+    let alreadyOnChain = false;
+    let publishErr: string | undefined;
     try {
       const { request } = await publicClient.simulateContract({
         address: skillRegistryAddress,
@@ -130,16 +164,38 @@ async function main() {
         args: [skill.hash, tokenId, skill.capabilityTag, BigInt(skill.priceUSDC)],
         account,
       });
-      const txHash = await wallet.writeContract(request);
+      txHash = await wallet.writeContract(request);
       console.log(`[researcher] ✓ skill registered (tx ${txHash})`);
     } catch (err) {
       const msg = (err as Error).message;
       if (msg.includes('AlreadyPublished')) {
+        alreadyOnChain = true;
         console.log(`[researcher] skill already on-chain — skipping`);
       } else {
-        console.warn(`[researcher] skill publish failed:`, msg.slice(0, 200));
+        publishErr = msg.slice(0, 200);
+        console.warn(`[researcher] skill publish failed:`, publishErr);
       }
     }
+    // Append to the agent's encrypted log either way — successful publish,
+    // already-on-chain (idempotent re-run), or failure (debugging trail).
+    await memory.logAppend({
+      kind: 'skill.published',
+      data: {
+        capabilityTag: skill.capabilityTag,
+        artifactHash: skill.hash,
+        priceUSDC: skill.priceUSDC,
+        priceMUSDC: skill.priceUSDC / 1_000_000,
+        txHash,
+        alreadyOnChain,
+        error: publishErr,
+        summary: publishErr
+          ? `skill ${skill.capabilityTag} publish failed: ${publishErr}`
+          : alreadyOnChain
+            ? `skill ${skill.capabilityTag} already on-chain (idempotent)`
+            : `skill ${skill.capabilityTag} published @ ${(skill.priceUSDC / 1_000_000).toFixed(4)} mUSDC`,
+      },
+      ts: Date.now(),
+    });
   };
 
   const agent = new Agent(inft, memory, inference, executor, [], { onSkillPublish });
@@ -169,6 +225,7 @@ async function main() {
 
   if (!initial.ok) {
     console.log('[researcher] no matching skill — evolving...');
+    let attempts = 0;
     const evolved = await evolve({
       agent,
       task,
@@ -176,7 +233,26 @@ async function main() {
       storage,
       encryptionKey,
       onAttempt: (n, _code, result) => {
+        attempts = n;
         console.log(`  attempt ${n}: passed=${result.passed} reason=${result.reason ?? '—'}`);
+        // Log per-attempt for the timeline — gives judges visibility into
+        // the sandbox-test loop without dumping the LLM source.
+        memory
+          .logAppend({
+            kind: 'evolve.attempt',
+            data: {
+              taskId: task.id,
+              attempt: n,
+              passed: result.passed,
+              reason: result.reason,
+              durationMs: result.durationMs,
+              summary: `attempt ${n}: ${result.passed ? '✓ passed' : `✗ ${result.reason ?? 'failed'}`}`,
+            },
+            ts: Date.now(),
+          })
+          .catch(() => {
+            /* memory append best-effort */
+          });
       },
     });
 
@@ -185,8 +261,34 @@ async function main() {
       console.log(`    tag:   ${evolved.skill.capabilityTag}`);
       console.log(`    hash:  ${evolved.skill.hash}`);
       console.log(`    price: ${evolved.skill.priceUSDC} mUSDC base units`);
+      await memory.logAppend({
+        kind: 'evolve.success',
+        data: {
+          taskId: task.id,
+          taskDescription: task.description,
+          attempts,
+          skill: {
+            capabilityTag: evolved.skill.capabilityTag,
+            artifactHash: evolved.skill.hash,
+            priceUSDC: evolved.skill.priceUSDC,
+          },
+          summary: `evolved new skill ${evolved.skill.capabilityTag} after ${attempts} attempt${attempts === 1 ? '' : 's'}`,
+        },
+        ts: Date.now(),
+      });
     } else {
       console.error(`[researcher] ✗ evolution failed: ${evolved.reason}`);
+      await memory.logAppend({
+        kind: 'evolve.failure',
+        data: {
+          taskId: task.id,
+          taskDescription: task.description,
+          attempts,
+          reason: evolved.reason,
+          summary: `evolution failed for ${task.id}: ${evolved.reason}`,
+        },
+        ts: Date.now(),
+      });
       process.exit(1);
     }
   }

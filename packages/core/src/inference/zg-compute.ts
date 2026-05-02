@@ -21,6 +21,8 @@ import type {
   CodeGenResult,
   Inference,
   InferenceOpts,
+  ToolDef,
+  ToolCallRequest,
 } from '../types';
 
 // ──────────────────────────────────────────────────────────────────
@@ -59,10 +61,30 @@ export async function run(input) {
   };
 }
 `.trim();
+    // Derive a schemaIn from the task's exampleInput so the forged skill
+    // has a real schema (not an empty `additionalProperties: true` blob).
+    // This makes downstream tool-call inference reliable when the agent
+    // has multiple forged skills exposed.
+    const inputs = (opts.task.inputs ?? {}) as Record<string, unknown>;
+    const properties: Record<string, { type: string }> = {};
+    for (const [k, v] of Object.entries(inputs)) {
+      const t = Array.isArray(v) ? 'array' : typeof v;
+      properties[k] = { type: t === 'undefined' ? 'string' : t };
+    }
+    const schemaIn: Record<string, unknown> =
+      Object.keys(properties).length > 0
+        ? {
+            type: 'object',
+            properties,
+            required: Object.keys(properties),
+            additionalProperties: true,
+          }
+        : { type: 'object', properties: {}, additionalProperties: true };
+
     return {
       code,
       suggestedTag: tag,
-      schemaIn: { type: 'object', properties: {}, additionalProperties: true },
+      schemaIn,
       schemaOut: {
         type: 'object',
         properties: { abstract: { type: 'string' } },
@@ -139,10 +161,18 @@ export interface ZGComputeOpts {
    */
   modelHint?: string;
   /**
-   * Initial deposit in 0G tokens to the broker ledger (one-time per wallet).
-   * Broker requires ≥ 3 0G to create the account. Default 3 (minimum).
+   * Top-up amount in 0G to the broker ledger when balance is below
+   * `minBalanceOG`. Broker requires ≥ 3 0G to *create* the account,
+   * so 3 is the safe default for a fresh wallet. Default 3.
    */
   initialDepositOG?: number;
+  /**
+   * Skip top-ups while the broker ledger's available balance ≥ this
+   * threshold. Default 0.5 0G — enough for thousands of cheap chat
+   * completions on qwen-2.5-7b. Set to 0 to force a deposit on every
+   * run (legacy behavior).
+   */
+  minBalanceOG?: number;
   /**
    * Per-provider transfer in 0G to the inference sub-account. Min 1.
    * Default 1.
@@ -163,6 +193,46 @@ interface ProviderInfo {
   endpoint: string;
 }
 
+/**
+ * Pull the available (unlocked) balance out of the broker's ledger
+ * struct. The SDK returns an ethers Result tuple — fields may be
+ * named or positional depending on the ABI artifact. Returns 0G as a
+ * float (small loss-of-precision is fine for threshold checks).
+ */
+function readAvailable(ledger: unknown): number {
+  if (!ledger) return 0;
+  const NEURON = 1e18;
+  const asBig = (v: unknown): bigint | null => {
+    if (typeof v === 'bigint') return v;
+    if (typeof v === 'string' && /^\d+$/.test(v)) return BigInt(v);
+    return null;
+  };
+  // Try named-field access first (works on Result tuples with ABI names)
+  const obj = ledger as Record<string, unknown>;
+  const total =
+    asBig(obj.totalBalance) ?? asBig(obj.balance) ?? asBig(obj.amount);
+  const locked = asBig(obj.locked) ?? asBig(obj.lockedBalance) ?? 0n;
+  if (total !== null) {
+    const free = total - locked;
+    return Number(free) / NEURON;
+  }
+  // Positional fallback for tuple-shaped Results: collect bigints
+  if (Array.isArray(ledger)) {
+    const bigs = (ledger as unknown[])
+      .map(asBig)
+      .filter((v): v is bigint => v !== null && v > 100n);
+    if (bigs.length >= 2) {
+      // Convention observed on 0G testnet: [available, totalDeposited, …]
+      // First bigint is available; if the order ever flips, both being
+      // non-zero still yields a sensible threshold check.
+      const min = bigs.reduce((a, b) => (a < b ? a : b));
+      return Number(min) / NEURON;
+    }
+    if (bigs.length === 1) return Number(bigs[0]) / NEURON;
+  }
+  return 0;
+}
+
 export class ZGComputeInference implements Inference {
   private wallet: ethers.Wallet;
   private broker: any = null;
@@ -178,6 +248,62 @@ export class ZGComputeInference implements Inference {
     this.wallet = new ethers.Wallet(opts.privateKey, provider);
   }
 
+  /**
+   * Read the broker ledger for this wallet. Returns balances in 0G as
+   * floats. Use to surface "compute pool" info in a UI without exposing
+   * the private key. Triggers broker init if not already connected.
+   */
+  async getLedgerInfo(): Promise<{
+    walletAddress: string;
+    totalOG: number;
+    lockedOG: number;
+    availableOG: number;
+    minDepositOG: number;
+    minBalanceOG: number;
+  }> {
+    await this.ensureBroker();
+    const ledger = await this.broker.ledger.getLedger().catch(() => null);
+    const NEURON = 1e18;
+    const asBig = (v: unknown): bigint | null => {
+      if (typeof v === 'bigint') return v;
+      if (typeof v === 'string' && /^\d+$/.test(v)) return BigInt(v);
+      return null;
+    };
+    let totalOG = 0;
+    let lockedOG = 0;
+    if (ledger) {
+      const obj = ledger as Record<string, unknown>;
+      const total =
+        asBig(obj.totalBalance) ?? asBig(obj.balance) ?? asBig(obj.amount);
+      const locked =
+        asBig(obj.locked) ?? asBig(obj.lockedBalance) ?? null;
+      if (total !== null && locked !== null) {
+        totalOG = Number(total) / NEURON;
+        lockedOG = Number(locked) / NEURON;
+      } else if (Array.isArray(ledger)) {
+        const bigs = (ledger as unknown[])
+          .map(asBig)
+          .filter((v): v is bigint => v !== null && v > 100n);
+        if (bigs.length >= 2) {
+          // Convention: smaller value = locked/in-flight, larger = total
+          const sorted = [...bigs].sort((a, b) => (a < b ? -1 : 1));
+          lockedOG = Number(sorted[0]) / NEURON;
+          totalOG = Number(sorted[sorted.length - 1]!) / NEURON;
+        } else if (bigs.length === 1) {
+          totalOG = Number(bigs[0]) / NEURON;
+        }
+      }
+    }
+    return {
+      walletAddress: this.wallet.address,
+      totalOG,
+      lockedOG,
+      availableOG: Math.max(0, totalOG - lockedOG),
+      minDepositOG: this.opts.initialDepositOG ?? 3,
+      minBalanceOG: this.opts.minBalanceOG ?? 0.5,
+    };
+  }
+
   /** Lazy broker init: connects, deposits funds (idempotent), discovers services. */
   private async ensureBroker(): Promise<void> {
     if (this.brokerInit) return this.brokerInit;
@@ -185,14 +311,35 @@ export class ZGComputeInference implements Inference {
       this.log(`connecting broker as ${this.wallet.address}`);
       this.broker = await createZGComputeNetworkBroker(this.wallet);
 
-      // Initial fund — idempotent. If the ledger account already exists or
-      // has sufficient balance, this throws and we ignore.
-      const deposit = this.opts.initialDepositOG ?? 3;
+      // Initial fund — truly idempotent. Read the ledger first; only
+      // top up if the available balance falls below `minBalanceOG`.
+      // Broker requires ≥ 3 0G to *create* the account, but once it
+      // exists we don't need to keep stacking — every run was adding 3
+      // more 0G even though plenty was unused.
+      const targetTop = this.opts.initialDepositOG ?? 3;
+      const minBalance = this.opts.minBalanceOG ?? 0.5;
       try {
-        await this.broker.ledger.depositFund(deposit);
-        this.log(`deposited ${deposit} 0G to broker ledger`);
+        const ledger = await this.broker.ledger.getLedger().catch(() => null);
+        const available = ledger ? readAvailable(ledger) : 0;
+        if (available >= minBalance) {
+          this.log(
+            `broker ledger ok: ${available.toFixed(3)} 0G available (≥ ${minBalance} 0G threshold) — skipping deposit`
+          );
+        } else {
+          await this.broker.ledger.depositFund(targetTop);
+          this.log(
+            `topped up ${targetTop} 0G (had ${available.toFixed(3)} 0G, below ${minBalance} 0G threshold)`
+          );
+        }
       } catch (err) {
-        this.log(`deposit skipped: ${(err as Error).message.slice(0, 80)}`);
+        // Account didn't exist yet, or read failed — fall back to a one-time
+        // create-funded deposit. Still safer than the old unconditional add.
+        try {
+          await this.broker.ledger.depositFund(targetTop);
+          this.log(`first-time deposit ${targetTop} 0G to broker ledger`);
+        } catch (err2) {
+          this.log(`deposit skipped: ${(err2 as Error).message.slice(0, 80)}`);
+        }
       }
 
       // Discover services. The SDK returns ethers Result tuples — the
@@ -311,7 +458,10 @@ export class ZGComputeInference implements Inference {
    * verified flag so the UI can show a "TEE verified ✓" seal next to each
    * assistant turn. Falls back to a mock reply if the broker is down.
    */
-  async chat(messages: ChatMessage[]): Promise<ChatResult> {
+  async chat(
+    messages: ChatMessage[],
+    opts?: { tools?: ToolDef[]; toolChoice?: 'auto' | 'required' | 'none' }
+  ): Promise<ChatResult> {
     try {
       const provider = await this.pickProvider();
       await this.ensureProvider(provider.providerAddress);
@@ -323,19 +473,33 @@ export class ZGComputeInference implements Inference {
         provider.providerAddress
       );
 
-      this.log(`POST ${endpoint}/chat/completions (chat, ${messages.length} msgs, model=${model})`);
+      const body: Record<string, unknown> = { messages, model };
+      if (opts?.tools && opts.tools.length > 0) {
+        body.tools = opts.tools;
+        body.tool_choice = opts.toolChoice ?? 'auto';
+      }
+
+      this.log(
+        `POST ${endpoint}/chat/completions (chat, ${messages.length} msgs, ${
+          opts?.tools?.length ?? 0
+        } tools, model=${model})`
+      );
       const response = await fetch(`${endpoint}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({ messages, model }),
+        body: JSON.stringify(body),
       });
       if (!response.ok) {
         const text = await response.text();
         throw new Error(`zg-compute ${response.status}: ${text.slice(0, 200)}`);
       }
       const data = (await response.json()) as any;
-      const content = data?.choices?.[0]?.message?.content;
-      if (typeof content !== 'string') throw new Error('zg-compute-no-content');
+      const choiceMsg = data?.choices?.[0]?.message;
+      const content = choiceMsg?.content ?? '';
+      const toolCalls = choiceMsg?.tool_calls as ToolCallRequest[] | undefined;
+      if (typeof content !== 'string' && !toolCalls) {
+        throw new Error('zg-compute-no-content');
+      }
 
       const chatID =
         response.headers.get('ZG-Res-Key') ||
@@ -356,14 +520,31 @@ export class ZGComputeInference implements Inference {
         }
       }
 
-      return {
-        content,
+      // Qwen-2.5 emits its NATIVE tool-call format in `content` instead of
+      // the OpenAI `tool_calls` field when the proxy doesn't translate.
+      // Detect markers like ✿FUNCTION✿/✿ARGS✿ or <tool_call>{...}</tool_call>
+      // and synthesize OpenAI-shaped calls so the rest of the loop works.
+      let parsedToolCalls: ToolCallRequest[] | undefined = toolCalls;
+      let cleanContent = typeof content === 'string' ? content : '';
+      if ((!parsedToolCalls || parsedToolCalls.length === 0) && cleanContent) {
+        const synth = parseQwenNativeToolCalls(cleanContent, opts?.tools);
+        if (synth.calls.length > 0) {
+          parsedToolCalls = synth.calls;
+          cleanContent = synth.cleaned;
+          this.log(`parsed ${synth.calls.length} qwen-native tool call(s) from content`);
+        }
+      }
+
+      const result: ChatResult = {
+        content: cleanContent,
         chatID,
         verified,
         providerAddress: provider.providerAddress,
         model,
         endpoint,
       };
+      if (parsedToolCalls && parsedToolCalls.length > 0) result.toolCalls = parsedToolCalls;
+      return result;
     } catch (err) {
       if (this.opts.fallbackToMock !== false) {
         console.warn('[zg-compute] chat → mock fallback:', (err as Error).message);
@@ -493,4 +674,231 @@ Respond with JSON only — no prose, no markdown code fences, no backticks.`;
   private log(msg: string): void {
     if (this.opts.debug) console.log(`[zg-compute] ${msg}`);
   }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Qwen-native tool-call parser
+//
+// qwen-2.5-7b on 0G's proxy sometimes emits its training-time format
+// (✿FUNCTION✿:/✿ARGS✿: or <tool_call>{...}</tool_call>) directly in the
+// content field instead of the OpenAI tool_calls schema. This parser
+// detects those markers and synthesizes OpenAI-shaped tool calls so
+// the upstream loop can run them like any other tool call.
+// ──────────────────────────────────────────────────────────────────
+
+interface NativeParseResult {
+  calls: ToolCallRequest[];
+  cleaned: string; // content with the tool-call tokens stripped
+}
+
+function parseQwenNativeToolCalls(
+  content: string,
+  knownTools?: ToolDef[]
+): NativeParseResult {
+  const calls: ToolCallRequest[] = [];
+  let counter = 0;
+  const newCallId = () => `qwen-${Date.now()}-${counter++}`;
+
+  // Spans we successfully consumed — used to rebuild cleaned text.
+  const spans: Array<[number, number]> = [];
+
+  // Pattern 1: <tool_call>{...}</tool_call>
+  {
+    const rx = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = rx.exec(content))) {
+      try {
+        const obj = JSON.parse((m[1] ?? '').trim());
+        const name = typeof obj.name === 'string' ? obj.name : null;
+        if (name) {
+          calls.push({
+            id: newCallId(),
+            type: 'function',
+            function: {
+              name,
+              arguments: JSON.stringify(obj.arguments ?? obj.parameters ?? {}),
+            },
+          });
+        }
+      } catch {
+        /* skip */
+      }
+      spans.push([m.index, m.index + m[0].length]);
+    }
+  }
+
+  // Pattern 2: ✿FUNCTION✿: name [\n] ✿ARGS✿: { ... balanced ... }
+  // We hand-walk braces to handle nested JSON objects.
+  const findFn = /✿FUNCTION✿\s*:\s*([\w.\-]+)/g;
+  let fnMatch: RegExpExecArray | null;
+  while ((fnMatch = findFn.exec(content))) {
+    const name = fnMatch[1] ?? '';
+    if (!name) continue;
+    const fnStart = fnMatch.index;
+    const argsKey = '✿ARGS✿';
+    const argsKeyAt = content.indexOf(argsKey, fnStart + fnMatch[0].length);
+    if (argsKeyAt === -1) continue;
+    const after = content.indexOf(':', argsKeyAt);
+    if (after === -1) continue;
+    const braceStart = content.indexOf('{', after);
+    if (braceStart === -1) continue;
+    const braceEnd = findMatchingBrace(content, braceStart);
+    if (braceEnd === -1) continue;
+    const argsRaw = content.slice(braceStart, braceEnd + 1);
+    try {
+      const args = JSON.parse(argsRaw);
+      calls.push({
+        id: newCallId(),
+        type: 'function',
+        function: { name, arguments: JSON.stringify(args) },
+      });
+      spans.push([fnStart, braceEnd + 1]);
+    } catch {
+      /* skip malformed */
+    }
+  }
+
+  // Pattern 3: bare ✿ARGS✿: { ... } with no preceding FUNCTION marker.
+  // Skip ones already covered by Pattern 2 (overlap with spans). Try to
+  // pick up an explicit name from a leading `_skill_<name>` / `function:<name>`
+  // pseudo-marker that some qwen variants emit just before ✿ARGS✿.
+  const findArgs = /✿ARGS✿\s*:/g;
+  let argsMatch: RegExpExecArray | null;
+  while ((argsMatch = findArgs.exec(content))) {
+    const at = argsMatch.index;
+    if (spans.some(([s, e]) => at >= s && at < e)) continue;
+    const braceStart = content.indexOf('{', at);
+    if (braceStart === -1) continue;
+    const braceEnd = findMatchingBrace(content, braceStart);
+    if (braceEnd === -1) continue;
+    const argsRaw = content.slice(braceStart, braceEnd + 1);
+    try {
+      const args = JSON.parse(argsRaw);
+
+      // Look back up to 200 chars for a name marker
+      const lookback = content.slice(Math.max(0, at - 200), at);
+      let explicitName: string | null = null;
+      const nameRx = /(?:_skill_|function\s*[:=]\s*|✿FUNCTION✿\s*:\s*)([\w.\-]+)/i;
+      const nameMatch = lookback.match(nameRx);
+      if (nameMatch && nameMatch[1] && nameMatch[1].toLowerCase() !== 'not_found') {
+        explicitName = nameMatch[1];
+      }
+
+      const name = explicitName ?? inferToolName(args, knownTools);
+      if (name) {
+        // Find span start — include the lookback marker if present
+        let spanStart = at;
+        if (nameMatch && nameMatch.index !== undefined) {
+          spanStart = Math.max(0, at - 200) + nameMatch.index;
+        }
+        calls.push({
+          id: newCallId(),
+          type: 'function',
+          function: { name, arguments: JSON.stringify(args) },
+        });
+        spans.push([spanStart, braceEnd + 1]);
+      }
+    } catch {
+      /* skip */
+    }
+  }
+
+  // Build cleaned output by removing consumed spans
+  spans.sort((a, b) => a[0] - b[0]);
+  let cleaned = '';
+  let cursor = 0;
+  for (const [s, e] of spans) {
+    if (s > cursor) cleaned += content.slice(cursor, s);
+    cursor = e;
+  }
+  if (cursor < content.length) cleaned += content.slice(cursor);
+
+  // Strip stray qwen markers/noise tokens
+  cleaned = cleaned
+    .replace(/✿[A-Z_]+✿\s*:?/g, '')
+    .replace(/<\/?tool_call>/gi, '')
+    .replace(/^_skill_not_found\s*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  if (calls.length > 0 && cleaned.length < 4) cleaned = '';
+
+  return { calls, cleaned };
+}
+
+/** Find the index of the matching `}` for the `{` at `start`. -1 if unbalanced. */
+function findMatchingBrace(s: string, start: number): number {
+  if (s[start] !== '{') return -1;
+  let depth = 0;
+  let inStr = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (c === '\\') {
+      escape = true;
+      continue;
+    }
+    if (c === '"') {
+      inStr = !inStr;
+      continue;
+    }
+    if (inStr) continue;
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Pick the best-matching tool name for a bare args object.
+ *
+ * Strategy (in priority order):
+ *   1. Exact required-fields match (score from declared schema)
+ *   2. Property-name overlap (any field appears in tool's properties)
+ *   3. Single-non-meta-tool fallback: if there's exactly ONE skill-shaped
+ *      tool exposed (the meta-tool `evolve_new_skill` excluded), assume
+ *      that's what the model meant. Forged skills frequently have empty
+ *      schemas because MockInference generates `{additionalProperties: true}`,
+ *      so schema scoring is unreliable.
+ *   4. Otherwise null — caller will leave the bare args in content as-is.
+ */
+function inferToolName(args: unknown, knownTools?: ToolDef[]): string | null {
+  if (!knownTools || knownTools.length === 0) return null;
+  const META_TOOLS = new Set(['evolve_new_skill']);
+  const argKeys =
+    args && typeof args === 'object' ? Object.keys(args as Record<string, unknown>) : [];
+
+  // Score each tool by required + property overlap
+  let best: { name: string; score: number; isMeta: boolean } | null = null;
+  for (const t of knownTools) {
+    const params = t.function.parameters as Record<string, unknown>;
+    const required = (params?.required as string[] | undefined) ?? [];
+    const props = Object.keys(
+      (params?.properties as Record<string, unknown> | undefined) ?? {}
+    );
+    let score = 0;
+    for (const r of required) if (argKeys.includes(r)) score += 3;
+    for (const p of props) if (argKeys.includes(p)) score += 1;
+    const isMeta = META_TOOLS.has(t.function.name);
+    if (!best || score > best.score) {
+      best = { name: t.function.name, score, isMeta };
+    }
+  }
+
+  // Strong scoring match wins outright
+  if (best && best.score >= 1) return best.name;
+
+  // Fallback: if there's exactly one non-meta tool, assume the model
+  // meant that one. Common case for forged skills with empty schemas.
+  const skillTools = knownTools.filter((t) => !META_TOOLS.has(t.function.name));
+  if (skillTools.length === 1 && skillTools[0]) return skillTools[0].function.name;
+
+  return null;
 }

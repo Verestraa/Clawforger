@@ -22,13 +22,26 @@ import {
   ShieldAlert,
   ArrowLeft,
   Sparkles,
+  Wrench,
+  Trash2,
+  Database,
 } from 'lucide-react';
 import type { Address, Hex } from 'viem';
 import { ABIS, ADDRESSES } from '@/lib/contracts';
 import { loadPayload } from '@/lib/intelligence';
+import { ComputePoolBadge } from '@/components/ComputePoolBadge';
 
 const MARKET_URL =
   (import.meta.env.VITE_X402_MARKET_URL as string | undefined) ?? 'http://localhost:3700';
+
+interface SkillInvocation {
+  name: string;
+  capabilityTag: string;
+  skillHash: string;
+  arguments: unknown;
+  output: unknown;
+  error?: string;
+}
 
 interface ChatTurn {
   role: 'user' | 'assistant';
@@ -38,6 +51,8 @@ interface ChatTurn {
   providerAddress?: string;
   model?: string;
   error?: string;
+  invocations?: SkillInvocation[];
+  toolsExposed?: string[];
 }
 
 export default function AgentChat() {
@@ -55,12 +70,59 @@ export default function AgentChat() {
   const [draft, setDraft] = useState('');
   const [transcript, setTranscript] = useState<ChatTurn[]>([]);
   const [sending, setSending] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Load encrypted chat history from the agent's 0G memory log on mount.
+  // Server reads agents/<tokenId>/__log_index__ from FileBackedZGStorage,
+  // decrypts each chat.turn entry with the deployer-derived key, and
+  // returns them in order. Survives page refresh + server restart.
+  useEffect(() => {
+    if (!tokenIdStr) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${MARKET_URL}/admin/chat-history/${tokenIdStr}`);
+        const json = await res.json();
+        if (!cancelled && json.ok && Array.isArray(json.history)) {
+          const turns: ChatTurn[] = json.history.map((h: any) => ({
+            role: h.role,
+            content: h.content ?? '',
+            chatID: h.chatID,
+            verified: h.verified,
+            providerAddress: h.providerAddress,
+            model: h.model,
+            invocations: h.invocations,
+          }));
+          setTranscript(turns);
+        }
+      } catch {
+        /* offline — start with empty transcript */
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tokenIdStr]);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [transcript, sending]);
+
+  async function clearHistory() {
+    if (!tokenIdStr) return;
+    if (!window.confirm('Clear all chat history for this iNFT? Encrypted log will be wiped.'))
+      return;
+    try {
+      await fetch(`${MARKET_URL}/admin/chat-history/${tokenIdStr}`, { method: 'DELETE' });
+      setTranscript([]);
+    } catch (err) {
+      console.warn('clear failed:', err);
+    }
+  }
 
   if (tokenId === undefined) {
     return <div className="card text-center text-zinc-500">invalid agent id</div>;
@@ -89,7 +151,11 @@ export default function AgentChat() {
       const res = await fetch(`${MARKET_URL}/admin/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ systemPrompt: personaPrompt, messages }),
+        body: JSON.stringify({
+          systemPrompt: personaPrompt,
+          messages,
+          agentTokenId: tokenIdStr,
+        }),
       });
       const json = await res.json();
       if (!json.ok) {
@@ -108,6 +174,8 @@ export default function AgentChat() {
           verified: json.verified,
           providerAddress: json.providerAddress,
           model: json.model,
+          invocations: json.invocations as SkillInvocation[] | undefined,
+          toolsExposed: json.toolsExposed as string[] | undefined,
         },
       ]);
     } catch (err) {
@@ -141,13 +209,31 @@ export default function AgentChat() {
           <Brain size={24} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-zinc-500">live chat with iNFT</div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="text-xs text-zinc-500">live chat with iNFT</div>
+            <ComputePoolBadge variant="inline" />
+            <span
+              className="inline-flex items-center gap-1.5 text-[10px] text-emerald-400/80 font-mono"
+              title="Conversation is encrypted with a key derived from the iNFT owner and persisted to the agent's memory log on 0G Storage. Survives refresh + server restart."
+            >
+              <Database size={11} /> 0G memory
+            </span>
+          </div>
           <h1 className="text-2xl font-bold">{agentName}</h1>
           <p className="text-xs text-zinc-500 mt-1 truncate">
             persona loaded from intelligenceHash{' '}
             <span className="font-mono text-zinc-400">{intelligenceHash.slice(0, 12)}…</span>
           </p>
         </div>
+        {transcript.length > 0 && (
+          <button
+            onClick={clearHistory}
+            className="text-[10px] text-zinc-500 hover:text-red-400 flex items-center gap-1 self-start"
+            title="wipe encrypted chat log"
+          >
+            <Trash2 size={11} /> clear
+          </button>
+        )}
       </div>
 
       {/* Transcript */}
@@ -155,7 +241,11 @@ export default function AgentChat() {
         ref={scrollRef}
         className="card !p-0 max-h-[55vh] overflow-y-auto bg-zinc-950/40"
       >
-        {transcript.length === 0 ? (
+        {historyLoading ? (
+          <div className="px-6 py-10 text-center text-xs text-zinc-500 flex items-center justify-center gap-2">
+            <Loader2 size={12} className="animate-spin" /> loading encrypted history from 0G memory…
+          </div>
+        ) : transcript.length === 0 ? (
           <EmptyState personaPrompt={personaPrompt} />
         ) : (
           <div className="divide-y divide-zinc-900">
@@ -230,9 +320,81 @@ function Turn({ turn, agentName }: { turn: ChatTurn; agentName: string }) {
       {turn.error ? (
         <div className="text-sm text-red-400">⚠ {turn.error}</div>
       ) : (
-        <div className="text-sm text-zinc-200 whitespace-pre-wrap">{turn.content}</div>
+        <>
+          {turn.invocations && turn.invocations.length > 0 && (
+            <div className="space-y-2 mb-3">
+              {turn.invocations.map((inv, i) => (
+                <ToolCard key={i} invocation={inv} />
+              ))}
+            </div>
+          )}
+          <div className="text-sm text-zinc-200 whitespace-pre-wrap">{turn.content}</div>
+        </>
       )}
     </div>
+  );
+}
+
+function ToolCard({ invocation }: { invocation: SkillInvocation }) {
+  const isForge = invocation.name === 'evolve_new_skill';
+  const argsStr = (() => {
+    try {
+      return JSON.stringify(invocation.arguments, null, 2);
+    } catch {
+      return String(invocation.arguments);
+    }
+  })();
+  const outputStr = (() => {
+    try {
+      return JSON.stringify(invocation.output, null, 2);
+    } catch {
+      return String(invocation.output);
+    }
+  })();
+  return (
+    <details
+      className={`rounded-md border ${
+        isForge
+          ? 'border-fuchsia-500/40 bg-fuchsia-500/5'
+          : 'border-accent/30 bg-accent/5'
+      }`}
+    >
+      <summary className="cursor-pointer px-3 py-2 text-xs flex items-center gap-2 select-none">
+        {isForge ? (
+          <Sparkles size={11} className="text-fuchsia-400" />
+        ) : (
+          <Wrench size={11} className="text-accent" />
+        )}
+        <span className={`font-mono ${isForge ? 'text-fuchsia-400' : 'text-accent'}`}>
+          {isForge ? `evolved → ${invocation.capabilityTag}` : invocation.capabilityTag}
+        </span>
+        {invocation.skillHash && (
+          <span className="text-[10px] text-zinc-500 font-mono ml-auto">
+            {invocation.skillHash.slice(0, 10)}…
+          </span>
+        )}
+      </summary>
+      <div className="px-3 pb-3 pt-1 space-y-2 text-[11px]">
+        {invocation.error ? (
+          <div className="text-red-400 font-mono">{invocation.error}</div>
+        ) : (
+          <>
+            <div>
+              <div className="text-zinc-500 mb-0.5">arguments</div>
+              <pre className="text-zinc-300 font-mono bg-zinc-950/60 rounded p-2 overflow-x-auto">
+                {argsStr}
+              </pre>
+            </div>
+            <div>
+              <div className="text-zinc-500 mb-0.5">output</div>
+              <pre className="text-emerald-300/90 font-mono bg-zinc-950/60 rounded p-2 overflow-x-auto">
+                {outputStr}
+              </pre>
+            </div>
+          </>
+        )}
+      </div>
+    </details>
   );
 }
 

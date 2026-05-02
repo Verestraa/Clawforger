@@ -16,6 +16,7 @@ import {
   persistPayload,
 } from '@/lib/intelligence';
 import { mintViaKeeperHub } from '@/lib/keeperhub-bridge';
+import { ComputePoolBadge } from '@/components/ComputePoolBadge';
 
 const SAMPLE_PERSONAS = [
   {
@@ -220,6 +221,8 @@ export default function Mint() {
           Hashes the persona, mints an ERC-7857 iNFT to your wallet on 0G Galileo.
         </p>
       </div>
+
+      <ComputePoolBadge variant="banner" />
 
       {/* Route toggle */}
       <div className="card !p-2 flex gap-1">

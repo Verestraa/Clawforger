@@ -1,8 +1,22 @@
 import { useParams } from 'react-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useReadContract } from 'wagmi';
 import { Link } from 'react-router';
-import { Brain, Sparkles, History, Coins, ExternalLink, MessageCircle } from 'lucide-react';
+import {
+  Brain,
+  Sparkles,
+  History,
+  Coins,
+  ExternalLink,
+  MessageCircle,
+  Database,
+  MessageSquare,
+  Wrench,
+  Zap,
+  RefreshCw,
+  Loader2,
+  Lock,
+} from 'lucide-react';
 import type { Address, Hex } from 'viem';
 import { ABIS, ADDRESSES } from '@/lib/contracts';
 import { loadPayload } from '@/lib/intelligence';
@@ -145,7 +159,7 @@ export default function AgentDetail() {
         )}
         {tab === 'skills' && <Skills skills={publishedSkills} />}
         {tab === 'evolution' && <Evolution events={evolutionEvents} />}
-        {tab === 'memory log' && <MemoryLog />}
+        {tab === 'memory log' && <MemoryLog tokenIdStr={tokenIdStr} />}
       </div>
     </div>
   );
@@ -272,12 +286,215 @@ function Evolution({ events }: { events: EvolutionEvent[] }) {
   );
 }
 
-function MemoryLog() {
+interface LogEntry {
+  kind: string;
+  ts: number;
+  data: any;
+}
+
+const MARKET_URL =
+  (import.meta.env.VITE_X402_MARKET_URL as string | undefined) ?? 'http://localhost:3700';
+
+function MemoryLog({ tokenIdStr }: { tokenIdStr?: string }) {
+  const [entries, setEntries] = useState<LogEntry[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'all' | 'chat' | 'skill' | 'other'>('all');
+
+  async function load() {
+    if (!tokenIdStr) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${MARKET_URL}/admin/memory-log/${tokenIdStr}`);
+      const json = await res.json();
+      if (json.ok) setEntries(json.entries);
+      else setError(json.reason ?? 'failed');
+    } catch (err) {
+      setError(`bridge unreachable: ${(err as Error).message.slice(0, 80)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, [tokenIdStr]);
+
+  if (loading && !entries) {
+    return (
+      <div className="card text-xs text-zinc-500 flex items-center gap-2">
+        <Loader2 size={12} className="animate-spin" /> reading encrypted log from 0G memory…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="card border-red-500/30 bg-red-500/5 text-xs text-red-400 space-y-2">
+        <div>⚠ {error}</div>
+        <button
+          onClick={load}
+          className="text-zinc-400 hover:text-accent inline-flex items-center gap-1"
+        >
+          <RefreshCw size={11} /> retry
+        </button>
+      </div>
+    );
+  }
+  if (!entries || entries.length === 0) {
+    return (
+      <div className="card space-y-3">
+        <div className="flex items-center gap-2 text-xs text-emerald-400/80">
+          <Lock size={12} /> log is empty but the channel is live
+        </div>
+        <p className="text-zinc-400 text-sm">
+          No entries yet. Chat with this agent or evolve a new skill — every action is encrypted
+          with a key derived from the iNFT owner and persisted to the agent's memory log on 0G
+          Storage. The same iNFT can be transferred to another wallet and the new owner re-keys the
+          log via secure transfer.
+        </p>
+      </div>
+    );
+  }
+
+  const filtered = entries.filter((e) => {
+    if (filter === 'all') return true;
+    if (filter === 'chat') return e.kind.startsWith('chat.');
+    if (filter === 'skill') return e.kind.startsWith('skill.') || e.kind.startsWith('evolve.');
+    return !e.kind.startsWith('chat.') && !e.kind.startsWith('skill.') && !e.kind.startsWith('evolve.');
+  });
+
+  const counts = {
+    all: entries.length,
+    chat: entries.filter((e) => e.kind.startsWith('chat.')).length,
+    skill: entries.filter((e) => e.kind.startsWith('skill.') || e.kind.startsWith('evolve.')).length,
+    other: entries.filter(
+      (e) => !e.kind.startsWith('chat.') && !e.kind.startsWith('skill.') && !e.kind.startsWith('evolve.')
+    ).length,
+  };
+
   return (
-    <div className="card">
-      <p className="text-zinc-500 text-sm">No log entries yet — run a task to populate memory.</p>
+    <div className="space-y-3">
+      <div className="card !p-3 flex items-center gap-2 flex-wrap text-xs">
+        <span className="inline-flex items-center gap-1.5 text-emerald-400/80 font-mono">
+          <Database size={11} /> {entries.length} encrypted entries on 0G Storage
+        </span>
+        <button
+          onClick={load}
+          className="ml-auto text-zinc-500 hover:text-accent inline-flex items-center gap-1"
+        >
+          <RefreshCw size={10} /> refresh
+        </button>
+      </div>
+
+      <div className="flex gap-1 flex-wrap">
+        <FilterPill active={filter === 'all'} onClick={() => setFilter('all')} label={`all (${counts.all})`} />
+        <FilterPill active={filter === 'chat'} onClick={() => setFilter('chat')} label={`chat (${counts.chat})`} />
+        <FilterPill active={filter === 'skill'} onClick={() => setFilter('skill')} label={`skills (${counts.skill})`} />
+        <FilterPill active={filter === 'other'} onClick={() => setFilter('other')} label={`other (${counts.other})`} />
+      </div>
+
+      <div className="card !p-0 divide-y divide-zinc-900">
+        {filtered.length === 0 && (
+          <div className="px-5 py-6 text-center text-xs text-zinc-500">no entries match this filter</div>
+        )}
+        {filtered.map((e, i) => (
+          <LogRow key={i} entry={e} />
+        ))}
+      </div>
     </div>
   );
+}
+
+function FilterPill({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`pill text-[11px] ${active ? 'border-accent/60 text-accent bg-accent/10' : 'text-zinc-500 hover:text-zinc-300'}`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function LogRow({ entry }: { entry: LogEntry }) {
+  const tone = kindTone(entry.kind);
+  return (
+    <details className="group">
+      <summary className="cursor-pointer px-4 py-3 flex items-center gap-3 select-none hover:bg-zinc-900/30">
+        <span className={tone.bgClass + ' rounded p-1.5'}>
+          <tone.Icon size={11} className={tone.fgClass} />
+        </span>
+        <div className="flex-1 min-w-0 flex items-baseline gap-2">
+          <span className={`text-xs font-mono ${tone.fgClass}`}>{entry.kind}</span>
+          <span className="text-[11px] text-zinc-300 truncate">{summarize(entry)}</span>
+        </div>
+        <span className="text-[10px] text-zinc-600 font-mono whitespace-nowrap">
+          {new Date(entry.ts).toLocaleString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          })}
+        </span>
+      </summary>
+      <div className="px-4 pb-4 pt-1 text-[11px]">
+        <pre className="text-zinc-300 font-mono bg-zinc-950/60 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all">
+          {(() => {
+            try {
+              return JSON.stringify(entry.data, null, 2);
+            } catch {
+              return String(entry.data);
+            }
+          })()}
+        </pre>
+      </div>
+    </details>
+  );
+}
+
+function kindTone(kind: string): {
+  Icon: typeof MessageSquare;
+  bgClass: string;
+  fgClass: string;
+} {
+  if (kind.startsWith('chat.'))
+    return { Icon: MessageSquare, bgClass: 'bg-sky-500/10', fgClass: 'text-sky-400' };
+  if (kind.startsWith('skill.') || kind.startsWith('evolve.'))
+    return { Icon: Wrench, bgClass: 'bg-accent/10', fgClass: 'text-accent' };
+  return { Icon: Zap, bgClass: 'bg-zinc-700/30', fgClass: 'text-zinc-400' };
+}
+
+function summarize(entry: LogEntry): string {
+  const d = entry.data;
+  if (entry.kind === 'chat.turn') {
+    const role = d?.role ?? '?';
+    const content = typeof d?.content === 'string' ? d.content : '';
+    const head = content.length > 80 ? content.slice(0, 80) + '…' : content;
+    if (role === 'user') return `you: ${head}`;
+    if (role === 'assistant') {
+      const inv = Array.isArray(d?.invocations) && d.invocations.length > 0
+        ? ` · ${d.invocations.length} tool call${d.invocations.length === 1 ? '' : 's'}`
+        : '';
+      return `agent: ${head}${inv}`;
+    }
+    return `${role}: ${head}`;
+  }
+  if (typeof d?.summary === 'string') return d.summary;
+  try {
+    return JSON.stringify(d).slice(0, 90);
+  } catch {
+    return '';
+  }
 }
 
 function isZeroHash(h: Hex): boolean {

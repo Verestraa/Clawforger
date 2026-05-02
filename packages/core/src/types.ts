@@ -121,12 +121,34 @@ export interface CodeGenResult {
 }
 
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  /** OpenAI-compat: present when role==='assistant' and the model picked tools. */
+  tool_calls?: ToolCallRequest[];
+  /** OpenAI-compat: present when role==='tool', references the assistant call. */
+  tool_call_id?: string;
+}
+
+export interface ToolDef {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>; // JSON Schema
+  };
+}
+
+export interface ToolCallRequest {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string; // JSON-encoded
+  };
 }
 
 export interface ChatResult {
-  /** The assistant's reply content. */
+  /** The assistant's reply content. Empty string when tool_calls is set instead. */
   content: string;
   /** TEE chatID returned by the provider — used to verify the response. */
   chatID: string | null;
@@ -138,6 +160,8 @@ export interface ChatResult {
   model: string;
   /** Full URL of the provider's chat endpoint. */
   endpoint: string;
+  /** Tool calls the model wants to make (when not yet ready to answer). */
+  toolCalls?: ToolCallRequest[];
 }
 
 export interface Inference {
@@ -145,8 +169,13 @@ export interface Inference {
   /**
    * Multi-message chat with TEE-verification metadata. Implementations
    * may pass through to generate() for backward compat.
+   * Optional `tools` enables OpenAI-compat function calling — the result
+   * may carry toolCalls instead of content.
    */
-  chat?(messages: ChatMessage[]): Promise<ChatResult>;
+  chat?(
+    messages: ChatMessage[],
+    opts?: { tools?: ToolDef[]; toolChoice?: 'auto' | 'required' | 'none' }
+  ): Promise<ChatResult>;
   generateCode(opts: CodeGenOpts): Promise<CodeGenResult>;
 }
 

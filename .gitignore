@@ -26,6 +26,10 @@ cache/               # Foundry cache
 .svelte-kit/
 *.tsbuildinfo
 
+# ─── Runtime artifacts ───────────────────────────────────────
+# FileBackedZGStorage — encrypted per-agent memory log
+/data/
+
 # ─── Coverage / test artifacts ───────────────────────────────
 coverage/
 *.lcov

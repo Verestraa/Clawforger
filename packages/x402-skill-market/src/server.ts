@@ -25,6 +25,15 @@ import ClawforgerINFTAbi from '@clawforger/core/abis/ClawforgerINFT.json' assert
 import RoyaltyVaultAbi from '@clawforger/core/abis/RoyaltyVault.json' assert { type: 'json' };
 import { KeeperHubExecutor } from '@clawforger/keeperhub-execute';
 import { ZGComputeInference } from '@clawforger/core';
+import { Agent } from '@clawforger/core';
+import type { Task } from '@clawforger/core';
+import { evolve } from '@clawforger/skill-forge';
+import SkillRegistryAbi from '@clawforger/core/abis/SkillRegistry.json' assert { type: 'json' };
+import {
+  FileBackedZGStorage,
+  ZGMemory,
+  deriveKeyFromSignature,
+} from '@clawforger/memory-0g';
 
 const port = Number(process.env.PORT ?? 3700);
 const facilitatorUrl = process.env.X402_FACILITATOR_URL ?? 'http://localhost:3701';
@@ -32,7 +41,7 @@ const facilitatorUrl = process.env.X402_FACILITATOR_URL ?? 'http://localhost:370
 // Pinned addresses — mirror of addresses.json for hackathon scope.
 // In production, read addresses.json from disk on startup.
 const CLAWFORGER_INFT = '0xfe9163ee0a168e30c10c458c3fadf9f8566647fc' as const;
-const SKILL_REGISTRY = '0xa20f408bdc1340ded25f602469b623d22adc201c' as const;
+const SKILL_REGISTRY = '0xdd8b4fbb08327367ddc61aaca5d119d7e5cedb47' as const;
 const MUSDC_ADDRESS = '0xbabaeabce4fbb7a356b2b9e868563da74edfd5f5' as const;
 const mUSDCAddress: Address = MUSDC_ADDRESS;
 
@@ -138,6 +147,31 @@ const inference =
       })
     : null;
 
+// Per-agent encrypted memory. Drives chat history persistence — each
+// /admin/chat turn is appended to the agent's iNFT-namespaced log on
+// 0G Storage (file-backed locally; swap to RealZGStorageClient when
+// @0gfoundation/0g-ts-sdk is wired). Survives refresh + server restart.
+const MEMORY_FILE = process.env.MEMORY_FILE ?? './data/agent-memory.json';
+const storage = new FileBackedZGStorage(MEMORY_FILE);
+const encryptionKeyPromise = fallbackPk
+  ? deriveKeyFromSignature(fallbackPk)
+  : null;
+const memoryCache = new Map<string, ZGMemory>();
+async function getMemoryFor(tokenId: bigint): Promise<ZGMemory | null> {
+  if (!encryptionKeyPromise) return null;
+  const key = String(tokenId);
+  const cached = memoryCache.get(key);
+  if (cached) return cached;
+  const encryptionKey = await encryptionKeyPromise;
+  const mem = new ZGMemory({
+    storage,
+    encryptionKey,
+    namespace: `agents/${tokenId}`,
+  });
+  memoryCache.set(key, mem);
+  return mem;
+}
+
 const executor = new KeeperHubExecutor({
   apiKey: process.env.KEEPERHUB_API_KEY ?? '',
   baseUrl: process.env.KEEPERHUB_MCP_URL ?? 'https://api.keeperhub.com',
@@ -149,6 +183,43 @@ const app = new Hono();
 app.use('*', cors({ exposeHeaders: ['X-Payment-Receipt'] }));
 
 app.get('/health', (c) => c.json({ ok: true, port, facilitator: facilitatorUrl }));
+
+// ── Compute pool info ─────────────────────────────────────────────
+//
+// Surfaces the 0G Compute broker ledger for the server's signing key
+// (every studio user shares this pool — the server pays for inference,
+// not the user's wallet). Studio displays this so users can see how
+// much TEE inference is left in the bank before chatting.
+app.get('/admin/compute-balance', async (c) => {
+  if (!inference) {
+    return c.json(
+      {
+        ok: false,
+        reason: 'inference-not-configured',
+        minDepositOG: 3,
+        info: 'A fresh wallet must deposit ≥ 3 0G to create a 0G Compute broker account.',
+      },
+      503
+    );
+  }
+  try {
+    const info = await inference.getLedgerInfo();
+    return c.json({
+      ok: true,
+      walletAddress: info.walletAddress,
+      totalOG: info.totalOG,
+      lockedOG: info.lockedOG,
+      availableOG: info.availableOG,
+      minDepositOG: info.minDepositOG,
+      minBalanceOG: info.minBalanceOG,
+      note:
+        'Pool funds inference for ALL agents — users never pay for chat directly. ' +
+        'When availableOG falls below minBalanceOG the server tops up by minDepositOG.',
+    });
+  } catch (err) {
+    return c.json({ ok: false, reason: (err as Error).message }, 500);
+  }
+});
 
 // ── Discovery ─────────────────────────────────────────────────────
 app.get('/skills', async (c) => {
@@ -188,8 +259,10 @@ app.post('/publish', async (c) => {
 //
 // Studio POSTs the agent's persona + conversation history; the server
 // proxies through ZGComputeInference (TEE-verified qwen-2.5-7b on 0G
-// Compute). Returns the assistant reply + chatID + verified flag so the
-// UI can render a TEE-verified seal next to each turn.
+// Compute). When agentTokenId is provided, skills owned by that agent
+// are exposed as OpenAI-compat function tools — if the model returns
+// tool_calls, we run them via the stub executor and feed results back
+// up to MAX_TOOL_ITERS turns until the model emits a final answer.
 const ChatRoleSchema = z.enum(['system', 'user', 'assistant']);
 const ChatMessageSchema = z.object({
   role: ChatRoleSchema,
@@ -198,7 +271,196 @@ const ChatMessageSchema = z.object({
 const ChatRequestSchema = z.object({
   systemPrompt: z.string().max(10_000).optional(),
   messages: z.array(ChatMessageSchema).min(1).max(50),
+  agentTokenId: z.union([z.string(), z.number()]).optional(),
 });
+
+const MAX_TOOL_ITERS = 5;
+const MAX_FORGE_PER_REQUEST = 1; // self-evolution is slow + on-chain; cap per chat turn
+
+/** Sanitize "fetch.arxiv" → "fetch_arxiv" (OpenAI tool names: [a-zA-Z0-9_-]{1,64}). */
+function toolNameFor(skill: SkillManifest): string {
+  return skill.capabilityTag.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+}
+
+/** Meta-tool the LLM uses to evolve a brand-new skill mid-conversation. */
+const EVOLVE_TOOL_NAME = 'evolve_new_skill';
+const EVOLVE_TOOL_DEF = {
+  type: 'function' as const,
+  function: {
+    name: EVOLVE_TOOL_NAME,
+    description:
+      'Create and on-chain register a NEW skill on this agent\'s iNFT for a capability the agent does NOT currently have. ' +
+      'Triggers skill-forge: LLM-generated TypeScript code is sandbox-tested, the artifact is uploaded to 0G Storage, ' +
+      'and SkillRegistry.publishSkill is called on 0G Galileo. Use ONLY when the user requests something not covered by ' +
+      'an existing skill. Slow (10–30s) and writes a real on-chain transaction — do not call speculatively.',
+    parameters: {
+      type: 'object',
+      properties: {
+        capabilityTag: {
+          type: 'string',
+          description:
+            'Dotted lowercase tag, e.g. "fetch.youtube", "translate.text", "summarize.url". Must be unique per agent.',
+        },
+        taskDescription: {
+          type: 'string',
+          description:
+            'One-sentence description of what the new skill should do, written for an LLM to implement.',
+        },
+        exampleInput: {
+          type: 'object',
+          description:
+            'A concrete example input the new skill must accept. Used as the sandbox-test fixture.',
+          additionalProperties: true,
+        },
+      },
+      required: ['capabilityTag', 'taskDescription', 'exampleInput'],
+    },
+  },
+};
+
+/**
+ * Forge a new skill for an existing iNFT and register it on-chain.
+ * Synchronous in the chat-handling sense — caller awaits the full flow
+ * (codegen → sandbox → 0G Storage upload → SkillRegistry tx). Returns
+ * a structured summary the LLM can quote in its next reply.
+ */
+async function forgeSkillForAgent(
+  agentTokenId: bigint,
+  args: { capabilityTag: string; taskDescription: string; exampleInput: Record<string, unknown> },
+  memory: ZGMemory
+): Promise<{
+  ok: boolean;
+  capabilityTag?: string;
+  artifactHash?: string;
+  priceUSDC?: number;
+  txHash?: string;
+  attempts?: number;
+  reason?: string;
+  metadataUpdated?: boolean;
+  metadataNote?: string;
+}> {
+  if (!inference || !fallbackPk || !encryptionKeyPromise || !fallbackSigner) {
+    return { ok: false, reason: 'forge-not-configured-on-server' };
+  }
+
+  const encryptionKey = await encryptionKeyPromise;
+
+  // Build a Task tight enough for sandbox to accept the LLM's output.
+  // Schema match is loose — we just need *something* JSON-shaped back.
+  const task: Task = {
+    id: `chat-forge-${Date.now()}`,
+    description: args.taskDescription,
+    inputs: args.exampleInput,
+    successCriteria: {
+      kind: 'jsonSchemaMatch',
+      schema: { type: 'object', additionalProperties: true },
+    },
+  };
+
+  const inft = {
+    contractAddress: CLAWFORGER_INFT as Address,
+    tokenId: agentTokenId,
+    chain: '0g-galileo-testnet' as const,
+  };
+  const agent = new Agent(inft, memory, inference, executor, [], {
+    onSkillPublish: async (skill) => {
+      // Publish on-chain via SkillRegistry.publishSkill — same path as
+      // examples/researcher uses on the CLI.
+      try {
+        const { request } = await publicClient.simulateContract({
+          address: SKILL_REGISTRY,
+          abi: SkillRegistryAbi as readonly unknown[],
+          functionName: 'publishSkill',
+          args: [skill.hash, agentTokenId, skill.capabilityTag, BigInt(skill.priceUSDC)],
+          account: privateKeyToAccount(fallbackPk),
+        });
+        const txHash = await fallbackSigner.writeContract(request);
+        console.log(`[skill-market] forge → publishSkill tx ${txHash}`);
+      } catch (err) {
+        console.warn(
+          '[skill-market] forge → publishSkill failed:',
+          (err as Error).message.slice(0, 200)
+        );
+      }
+    },
+  });
+
+  let attempts = 0;
+  const result = await evolve({
+    agent,
+    task,
+    signer: fallbackSigner,
+    storage,
+    encryptionKey,
+    forceTag: args.capabilityTag,
+    onAttempt: (n, _code, sandboxResult) => {
+      attempts = n;
+      memory
+        .logAppend({
+          kind: 'evolve.attempt',
+          data: {
+            taskId: task.id,
+            attempt: n,
+            passed: sandboxResult.passed,
+            reason: sandboxResult.reason,
+            durationMs: sandboxResult.durationMs,
+            triggeredBy: 'chat',
+            summary: `chat-forge attempt ${n}: ${sandboxResult.passed ? '✓ passed' : `✗ ${sandboxResult.reason ?? 'failed'}`}`,
+          },
+          ts: Date.now(),
+        })
+        .catch(() => {});
+    },
+  });
+
+  if (!result.ok || !result.skill) {
+    await memory.logAppend({
+      kind: 'evolve.failure',
+      data: {
+        taskId: task.id,
+        attempts: result.attempts,
+        reason: result.reason,
+        triggeredBy: 'chat',
+        summary: `chat-forge failed for ${args.capabilityTag}: ${result.reason}`,
+      },
+      ts: Date.now(),
+    });
+    return { ok: false, attempts: result.attempts, reason: result.reason };
+  }
+
+  await memory.logAppend({
+    kind: 'evolve.success',
+    data: {
+      taskId: task.id,
+      attempts: result.attempts,
+      triggeredBy: 'chat',
+      skill: {
+        capabilityTag: result.skill.capabilityTag,
+        artifactHash: result.skill.hash,
+        priceUSDC: result.skill.priceUSDC,
+      },
+      summary: `chat-forge succeeded: ${result.skill.capabilityTag} after ${result.attempts} attempt${result.attempts === 1 ? '' : 's'}`,
+    },
+    ts: Date.now(),
+  });
+
+  // Make the new skill discoverable to the marketplace immediately
+  index.publish(result.skill);
+
+  return {
+    ok: true,
+    capabilityTag: result.skill.capabilityTag,
+    artifactHash: result.skill.hash,
+    priceUSDC: result.skill.priceUSDC,
+    attempts: result.attempts,
+    metadataUpdated: result.metadataUpdated ?? true,
+    metadataNote: result.metadataUpdated
+      ? undefined
+      : `iNFT metadata pointer not updated (server is not the owner of #${agentTokenId}). ` +
+        `SkillRegistry was still updated and the skill is fully usable in chat. ` +
+        `The owner can backfill iNFT.evolveAgent later. detail: ${result.metadataError ?? 'unknown'}`,
+  };
+}
 
 app.post('/admin/chat', async (c) => {
   if (!inference) {
@@ -209,23 +471,493 @@ app.post('/admin/chat', async (c) => {
   const parsed = ChatRequestSchema.safeParse(body);
   if (!parsed.success) return c.json({ ok: false, reason: parsed.error.message }, 400);
 
+  // Build tools from skills owned by this agent (or all skills if not scoped).
+  await syncFromChain();
+  const agentTokenId =
+    parsed.data.agentTokenId !== undefined ? BigInt(parsed.data.agentTokenId) : undefined;
+
+  const nameToSkill = new Map<string, SkillManifest>();
+  function rebuildTools() {
+    nameToSkill.clear();
+    const allSkills = index.all();
+    const scoped =
+      agentTokenId !== undefined
+        ? allSkills.filter((s) => s.ownerINFT.tokenId === agentTokenId)
+        : allSkills;
+    const skillTools = scoped.map((s) => {
+      const name = toolNameFor(s);
+      nameToSkill.set(name, s);
+      return {
+        type: 'function' as const,
+        function: {
+          name,
+          description: `Skill ${s.capabilityTag} — runs onchain skill artifact ${s.hash.slice(
+            0,
+            10
+          )}…`,
+          parameters: (s.schemaIn as Record<string, unknown>) ?? {
+            type: 'object',
+            properties: {},
+            additionalProperties: true,
+          },
+        },
+      };
+    });
+    // Always expose the meta-tool when the chat is scoped to a specific
+    // agent — that's the only context where forging a skill is meaningful.
+    if (agentTokenId !== undefined) skillTools.push(EVOLVE_TOOL_DEF);
+    return { tools: skillTools, scoped };
+  }
+  let { tools, scoped: scopedSkills } = rebuildTools();
+
   // Prepend the agent's persona as a system message
-  const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+  const messages: Array<{
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    content: string | null;
+    tool_calls?: any[];
+    tool_call_id?: string;
+  }> = [];
   if (parsed.data.systemPrompt) {
     messages.push({ role: 'system', content: parsed.data.systemPrompt });
   }
-  messages.push(...parsed.data.messages);
+
+  // Ground the model in *actual* on-chain skills so it doesn't hallucinate
+  // a generic capability list when asked "what skills do you have / can I
+  // buy from you". This injects a second system message right after the
+  // persona, listing every marketplace-published skill scoped to this iNFT.
+  const evolveDirective = agentTokenId !== undefined
+    ? [
+        ``,
+        `# CRITICAL — ANTI-HALLUCINATION RULES (read carefully)`,
+        ``,
+        `You DO NOT have access to the internet, file system, YouTube, arXiv,`,
+        `news APIs, weather, search engines, or any external service UNLESS that`,
+        `capability is in your tool list above. You CANNOT browse, you CANNOT`,
+        `recall current papers/videos/articles from training data, and you MUST`,
+        `NOT fabricate titles, abstracts, descriptions, transcripts, prices,`,
+        `or any other external content.`,
+        ``,
+        `When the user asks for data from an external source and you do NOT have a`,
+        `matching skill, you have exactly TWO valid responses:`,
+        ``,
+        `  1. Call \`evolve_new_skill\` to forge the skill on-chain RIGHT NOW, then`,
+        `     immediately call the new skill to answer. Pick a dotted lowercase`,
+        `     capability tag (e.g. "fetch.youtube" / "summarize.url" / "fetch.weather"),`,
+        `     a one-sentence taskDescription, and a concrete exampleInput taken from`,
+        `     the user's message. Forging takes ~10–30s and writes a real on-chain tx.`,
+        ``,
+        `  2. Say plainly: "I don't have a skill for that yet. I can forge one`,
+        `     on-chain right now if you'd like — should I?"`,
+        ``,
+        `WRONG (hallucination — never do this): inventing a title, description,`,
+        `abstract, or any content the user asked you to fetch. If you find yourself`,
+        `about to write a fake title or description, STOP and call evolve_new_skill`,
+        `instead.`,
+        ``,
+        `If the user gives you a URL, video id, paper id, or any external reference`,
+        `and you don't have a tool for it, default to calling \`evolve_new_skill\`.`,
+        ``,
+        `# Stub tool outputs`,
+        ``,
+        `Some skills (especially freshly-forged ones in this build) return outputs`,
+        `containing \`"placeholder": true\` and a \`note\` field. When you see this,`,
+        `the skill is registered on-chain but the marketplace server has not yet`,
+        `executed real code for it. You MUST tell the user honestly:`,
+        `  - the skill IS registered + listed for sale at 0.05 mUSDC`,
+        `  - cite the artifact hash if relevant`,
+        `  - explain real execution is pending`,
+        `  - DO NOT fabricate titles, abstracts, descriptions, or any content`,
+        `    that the skill claimed it would produce`,
+      ].join('\n')
+    : '';
+
+  if (scopedSkills.length > 0) {
+    const lines = scopedSkills.map((s) => {
+      const priceMUSDC = (s.priceUSDC / 1_000_000).toFixed(4);
+      return `  - capability: "${s.capabilityTag}" — tool: ${toolNameFor(s)} — price: ${priceMUSDC} mUSDC — artifact: ${s.hash.slice(0, 14)}…`;
+    });
+    const ctxBody = [
+      `# Your on-chain skills (the only real skills you have)`,
+      ``,
+      `You are iNFT #${agentTokenId ?? '(unscoped)'}. The following skills are`,
+      `published on the SkillRegistry contract and listed on the x402 marketplace.`,
+      `These are your ONLY real capabilities — every other capability you might`,
+      `imagine is hypothetical and NOT for sale. When the user asks "what skills`,
+      `do you have" or "what can I buy", answer ONLY from this list:`,
+      ``,
+      ...lines,
+      ``,
+      `Each skill is callable as an OpenAI function tool with the exact name`,
+      `shown above. Buyers pay the listed price in mUSDC via HTTP 402; royalties`,
+      `auto-split 95/5 to your owner / protocol on-chain. If you have zero skills`,
+      `published, say so plainly — do not invent.`,
+      evolveDirective,
+    ].join('\n');
+    messages.push({ role: 'system', content: ctxBody });
+  } else {
+    messages.push({
+      role: 'system',
+      content:
+        `You currently have NO on-chain skills published yet.\n` +
+        `If the user asks for a capability, call the \`evolve_new_skill\` tool to ` +
+        `forge one mid-conversation: skill-forge will generate code via 0G Compute, ` +
+        `sandbox-test it, upload the artifact to 0G Storage, and publish on-chain ` +
+        `via SkillRegistry. After it succeeds, the new tool will appear in your ` +
+        `tool list and you can call it immediately.` +
+        evolveDirective,
+    });
+  }
+
+  for (const m of parsed.data.messages) messages.push({ role: m.role, content: m.content });
+
+  const invocations: Array<{
+    name: string;
+    capabilityTag: string;
+    skillHash: string;
+    arguments: unknown;
+    output: unknown;
+    error?: string;
+  }> = [];
+
+  // Heuristic: when the latest user message looks like it requires
+  // external data (URL, video id, paper id, "fetch", "summarize", "search"),
+  // force the LLM to actually pick a tool instead of free-styling. qwen-2.5-7b
+  // tends to hallucinate plausible-looking content without this nudge.
+  const lastUserMsg = parsed.data.messages[parsed.data.messages.length - 1];
+  const looksExternal = (() => {
+    if (!lastUserMsg || lastUserMsg.role !== 'user') return false;
+    const t = lastUserMsg.content.toLowerCase();
+    const urlRx = /https?:\/\/|www\./;
+    const externalKw =
+      /\b(fetch|summarize|search|lookup|translate|scrape|crawl|download|article|paper|video|tweet|youtube|arxiv|github|wikipedia)\b/;
+    return urlRx.test(t) || externalKw.test(t);
+  })();
+  const initialToolChoice: 'auto' | 'required' = looksExternal ? 'required' : 'auto';
 
   try {
-    const result = await inference.chat!(messages);
+    let last = await inference.chat!(
+      messages,
+      tools.length > 0 ? { tools, toolChoice: initialToolChoice } : undefined
+    );
+
+    let iter = 0;
+    while (last.toolCalls && last.toolCalls.length > 0 && iter < MAX_TOOL_ITERS) {
+      iter += 1;
+      // Append the assistant turn that asked for tools
+      messages.push({
+        role: 'assistant',
+        content: last.content || null,
+        tool_calls: last.toolCalls,
+      });
+
+      let forgesThisRequest = 0;
+      let justForged = false;
+      // Run each tool call; append the result as a `role: 'tool'` message
+      for (const call of last.toolCalls) {
+        let parsedArgs: unknown = {};
+        try {
+          parsedArgs = JSON.parse(call.function.arguments || '{}');
+        } catch {
+          parsedArgs = { _raw: call.function.arguments };
+        }
+
+        // ── Meta-tool: agent decides to evolve a brand-new skill ─────
+        if (call.function.name === EVOLVE_TOOL_NAME) {
+          if (agentTokenId === undefined) {
+            const errMsg = 'evolve_new_skill requires agentTokenId in chat request';
+            invocations.push({
+              name: call.function.name,
+              capabilityTag: 'meta:evolve_new_skill',
+              skillHash: '',
+              arguments: parsedArgs,
+              output: null,
+              error: errMsg,
+            });
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: JSON.stringify({ error: errMsg }),
+            });
+            continue;
+          }
+          if (forgesThisRequest >= MAX_FORGE_PER_REQUEST) {
+            const errMsg = `forge-cap: only ${MAX_FORGE_PER_REQUEST} new skill(s) may be forged per chat turn — try again after replying to the user`;
+            invocations.push({
+              name: call.function.name,
+              capabilityTag: 'meta:evolve_new_skill',
+              skillHash: '',
+              arguments: parsedArgs,
+              output: null,
+              error: errMsg,
+            });
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: JSON.stringify({ error: errMsg }),
+            });
+            continue;
+          }
+          forgesThisRequest += 1;
+
+          const a = parsedArgs as {
+            capabilityTag?: string;
+            taskDescription?: string;
+            exampleInput?: Record<string, unknown>;
+          };
+          if (!a.capabilityTag || !a.taskDescription) {
+            const errMsg = 'evolve_new_skill: missing capabilityTag or taskDescription';
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: JSON.stringify({ error: errMsg }),
+            });
+            invocations.push({
+              name: call.function.name,
+              capabilityTag: 'meta:evolve_new_skill',
+              skillHash: '',
+              arguments: parsedArgs,
+              output: null,
+              error: errMsg,
+            });
+            continue;
+          }
+
+          const mem = await getMemoryFor(agentTokenId);
+          const forgeResult = await forgeSkillForAgent(
+            agentTokenId,
+            {
+              capabilityTag: a.capabilityTag,
+              taskDescription: a.taskDescription,
+              exampleInput: a.exampleInput ?? {},
+            },
+            mem!
+          );
+
+          // Refresh tools so the LLM sees the new skill on the next iteration
+          ({ tools, scoped: scopedSkills } = rebuildTools());
+          if (forgeResult.ok) justForged = true;
+
+          invocations.push({
+            name: call.function.name,
+            capabilityTag: forgeResult.capabilityTag ?? a.capabilityTag,
+            skillHash: forgeResult.artifactHash ?? '',
+            arguments: parsedArgs,
+            output: forgeResult,
+            error: forgeResult.ok ? undefined : forgeResult.reason,
+          });
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: JSON.stringify(forgeResult),
+          });
+          continue;
+        }
+
+        // ── Regular skill tool call ───────────────────────────────────
+        const skill = nameToSkill.get(call.function.name);
+        if (!skill) {
+          const errMsg = `unknown-tool: ${call.function.name}`;
+          invocations.push({
+            name: call.function.name,
+            capabilityTag: call.function.name,
+            skillHash: '',
+            arguments: parsedArgs,
+            output: null,
+            error: errMsg,
+          });
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: JSON.stringify({ error: errMsg }),
+          });
+          continue;
+        }
+
+        const output = stubSkillOutput(
+          skill.capabilityTag,
+          (parsedArgs as Record<string, unknown>) ?? {}
+        );
+        invocations.push({
+          name: call.function.name,
+          capabilityTag: skill.capabilityTag,
+          skillHash: skill.hash,
+          arguments: parsedArgs,
+          output,
+        });
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify(output),
+        });
+      }
+
+      // qwen-2.5-7b can't be trusted to honor placeholder-tool-output
+      // directives in the system prompt — it fabricates plausible content
+      // anyway. If ANY tool call this turn returned a placeholder, short-
+      // circuit the loop and emit a deterministic templated reply that
+      // clearly states what the skill is and that real execution is pending.
+      const placeholders = invocations.filter(
+        (inv) =>
+          inv.output &&
+          typeof inv.output === 'object' &&
+          (inv.output as Record<string, unknown>).placeholder === true
+      );
+      if (placeholders.length > 0) {
+        const lines = placeholders.map((p) => {
+          const hashShort = p.skillHash ? `${p.skillHash.slice(0, 12)}…` : '(no hash)';
+          return `- **${p.capabilityTag}** — registered on-chain (artifact ${hashShort}), listed at 0.05 mUSDC. Real execution is pending in this build.`;
+        });
+        last = {
+          ...last,
+          content:
+            `I called ${placeholders.length === 1 ? 'a skill' : `${placeholders.length} skills`} ` +
+            `for you, but ${placeholders.length === 1 ? 'it returned' : 'they returned'} ` +
+            `a placeholder — the marketplace server doesn't execute freshly-evolved ` +
+            `skill code in this build, so I can't fabricate real results.\n\n` +
+            lines.join('\n') +
+            `\n\nThe skill artifact is encrypted and stored on 0G Storage; once a worker ` +
+            `is wired to execute it, the same tool call will return real data.`,
+        };
+        break;
+      }
+
+      // Re-ask the model with the tool outputs in context.
+      // If we JUST forged a new skill, force tool_choice='required' so the
+      // model has to actually call the new skill — otherwise qwen-2.5-7b
+      // tends to fabricate plausible content rather than invoking the tool.
+      const nextChoice: 'auto' | 'required' = justForged ? 'required' : 'auto';
+      justForged = false; // only force on the very next turn
+      last = await inference.chat!(
+        messages,
+        tools.length > 0 ? { tools, toolChoice: nextChoice } : undefined
+      );
+    }
+
+    // Persist this turn-pair to the agent's encrypted memory log.
+    // Append the user's last message and the assistant's reply (with
+    // verification metadata + invocations). Lives under agents/<tokenId>
+    // namespace, encrypted with the server's derived key.
+    if (agentTokenId !== undefined) {
+      const mem = await getMemoryFor(agentTokenId);
+      if (mem) {
+        const lastUser = parsed.data.messages[parsed.data.messages.length - 1];
+        const ts = Date.now();
+        try {
+          if (lastUser && lastUser.role === 'user') {
+            await mem.logAppend({
+              kind: 'chat.turn',
+              data: { role: 'user', content: lastUser.content },
+              ts,
+            });
+          }
+          await mem.logAppend({
+            kind: 'chat.turn',
+            data: {
+              role: 'assistant',
+              content: last.content,
+              chatID: last.chatID,
+              verified: last.verified,
+              providerAddress: last.providerAddress,
+              model: last.model,
+              invocations,
+            },
+            ts: ts + 1,
+          });
+        } catch (err) {
+          console.warn('[skill-market] memory append failed:', (err as Error).message.slice(0, 200));
+        }
+      }
+    }
+
     return c.json({
       ok: true,
-      content: result.content,
-      chatID: result.chatID,
-      verified: result.verified,
-      providerAddress: result.providerAddress,
-      model: result.model,
+      content: last.content,
+      chatID: last.chatID,
+      verified: last.verified,
+      providerAddress: last.providerAddress,
+      model: last.model,
+      invocations,
+      toolsExposed: tools.map((t) => t.function.name),
     });
+  } catch (err) {
+    return c.json({ ok: false, reason: (err as Error).message }, 500);
+  }
+});
+
+// ── Full memory log (every kind) ──────────────────────────────────
+//
+// Returns every encrypted log entry for an agent — chat turns, skill
+// evolutions, future kv-writes, etc. Powers the AgentDetail "memory
+// log" tab so the iNFT-as-persistent-identity story is visible.
+app.get('/admin/memory-log/:tokenId', async (c) => {
+  const tokenIdStr = c.req.param('tokenId');
+  let tokenId: bigint;
+  try {
+    tokenId = BigInt(tokenIdStr);
+  } catch {
+    return c.json({ ok: false, reason: 'invalid-tokenId' }, 400);
+  }
+  const mem = await getMemoryFor(tokenId);
+  if (!mem) return c.json({ ok: true, entries: [] });
+  try {
+    const entries = (await mem.logRead()) as Array<{
+      kind: string;
+      data: unknown;
+      ts: number;
+    }>;
+    // Newest first for the timeline UI
+    const sorted = [...entries].sort((a, b) => b.ts - a.ts);
+    return c.json({ ok: true, entries: sorted, count: sorted.length });
+  } catch (err) {
+    return c.json({ ok: false, reason: (err as Error).message }, 500);
+  }
+});
+
+// ── Chat history (read encrypted log from 0G memory) ──────────────
+//
+// Studio loads this on AgentChat mount so refreshes / cross-device
+// access pick up the conversation where it left off. Server-only
+// because the encryption key is derived from DEPLOYER_PRIVATE_KEY.
+app.get('/admin/chat-history/:tokenId', async (c) => {
+  const tokenIdStr = c.req.param('tokenId');
+  let tokenId: bigint;
+  try {
+    tokenId = BigInt(tokenIdStr);
+  } catch {
+    return c.json({ ok: false, reason: 'invalid-tokenId' }, 400);
+  }
+  const mem = await getMemoryFor(tokenId);
+  if (!mem) return c.json({ ok: true, history: [] });
+  try {
+    const entries = (await mem.logRead()) as Array<{
+      kind: string;
+      data: unknown;
+      ts: number;
+    }>;
+    const history = entries
+      .filter((e) => e?.kind === 'chat.turn')
+      .map((e) => ({ ts: e.ts, ...(e.data as Record<string, unknown>) }));
+    return c.json({ ok: true, history });
+  } catch (err) {
+    return c.json({ ok: false, reason: (err as Error).message }, 500);
+  }
+});
+
+// ── Clear chat history (encrypted log wipe) ───────────────────────
+app.delete('/admin/chat-history/:tokenId', async (c) => {
+  const tokenIdStr = c.req.param('tokenId');
+  let tokenId: bigint;
+  try {
+    tokenId = BigInt(tokenIdStr);
+  } catch {
+    return c.json({ ok: false, reason: 'invalid-tokenId' }, 400);
+  }
+  const mem = await getMemoryFor(tokenId);
+  if (!mem) return c.json({ ok: true });
+  try {
+    await mem.kvDelete('__log_index__');
+    memoryCache.delete(String(tokenId));
+    return c.json({ ok: true });
   } catch (err) {
     return c.json({ ok: false, reason: (err as Error).message }, 500);
   }
@@ -449,10 +1181,15 @@ function stubSkillOutput(tag: string, inputs: Record<string, unknown>): Record<s
       length: typeof inputs.text === 'string' ? (inputs.text as string).length : 0,
     };
   }
+  // Default for freshly-forged or untemplated skills. Clean, user-readable.
+  // The "do not fabricate" directive lives in the system prompt now, not
+  // in the tool output — that text shouldn't leak to humans buying via
+  // the x402 paid path on the market.
   return {
     capability: tag,
     inputs,
-    output: `[stub] would execute ${tag}`,
+    placeholder: true,
+    note: `Skill ${tag} is registered on-chain (artifact pinned to 0G Storage) but the marketplace server runs a placeholder for freshly-evolved skills in this build.`,
   };
 }
 
