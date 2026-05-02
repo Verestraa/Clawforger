@@ -28,6 +28,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@0gfoundation/0g-compute-ts-sdk": "^0.8.0",
+    "ethers": "^6.16.0",
     "viem": "^2.21.0"
   },
   "devDependencies": {

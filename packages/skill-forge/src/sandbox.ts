@@ -103,8 +103,23 @@ async function timeout(ms: number): Promise<typeof SANDBOX_TIMEOUT> {
 }
 
 async function executeCandidate(code: string, inputs: unknown): Promise<unknown> {
-  // Strip ESM `export` keyword and wrap in an IIFE that exposes `run`
-  const stripped = code.replace(/^\s*export\s+/gm, '');
+  // Defensive sanitization — even with the prompt forbidding these, LLMs
+  // sometimes emit them. Strip before new Function() chokes.
+  const stripped = code
+    // Remove markdown code fences if the LLM wrapped the response
+    .replace(/^```[a-z]*\n/gm, '')
+    .replace(/^```$/gm, '')
+    // Strip ESM 'export' keyword (we wrap in a Function ourselves)
+    .replace(/^\s*export\s+/gm, '')
+    // Strip 'import ... from ...' lines (single quote)
+    .replace(/^\s*import\s+[^;]+from\s+['"][^'"]+['"];?\s*$/gm, '')
+    // Strip side-effect imports: import 'foo';
+    .replace(/^\s*import\s+['"][^'"]+['"];?\s*$/gm, '')
+    // Strip dynamic imports: const x = require('foo');
+    .replace(/\brequire\s*\(\s*['"][^'"]+['"]\s*\)/g, 'null')
+    // Strip TypeScript type annotations on the run function signature
+    .replace(/function\s+run\s*\(\s*input\s*:\s*[^)]+\)/g, 'function run(input)');
+
   const wrapper = `
     ${stripped}
     return run(${JSON.stringify(inputs)});

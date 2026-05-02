@@ -19,7 +19,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { Agent, MockInference } from '@clawforger/core';
+import { Agent, ZGComputeInference, MockInference } from '@clawforger/core';
 import type { Task } from '@clawforger/core';
 import { mintAgent } from '@clawforger/inft-identity';
 import { KeeperHubExecutor } from '@clawforger/keeperhub-execute';
@@ -98,7 +98,18 @@ async function main() {
   // ── 5. Construct the agent ──────────────────────────────────────
   const inft = { contractAddress: inftAddress, tokenId, chain: '0g-galileo-testnet' as const };
   const memory = new ZGMemory({ storage, encryptionKey, namespace: `agents/${tokenId}` });
-  const inference = new MockInference();
+
+  // Real TEE-verified inference via 0G Compute Network. Falls back to
+  // MockInference if the broker is unreachable or no providers are
+  // available — keeps the demo runnable on a fresh laptop.
+  const inference = new ZGComputeInference({
+    privateKey: pk,
+    rpcUrl: process.env.ZG_GALILEO_RPC,
+    modelHint: process.env.ZG_COMPUTE_MODEL ?? 'qwen',
+    fallbackToMock: true,
+    debug: true,
+  });
+
   const executor = new KeeperHubExecutor({
     apiKey: process.env.KEEPERHUB_API_KEY ?? '',
     baseUrl: process.env.KEEPERHUB_MCP_URL ?? 'https://api.keeperhub.com',
