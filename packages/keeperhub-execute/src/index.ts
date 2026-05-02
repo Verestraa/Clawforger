@@ -21,6 +21,15 @@ export class KeeperHubExecutor implements Executor {
     const workflow = compileToWorkflow(intent);
     return this.client.submitAndRun(intent, workflow);
   }
+
+  /**
+   * Have KH-side AI synthesize a workflow from a natural-language prompt.
+   * Showcases the AI-tools layer of KeeperHub — used in the studio's
+   * "AI workflow" demo flow. Returned shell is visible in the KH dashboard.
+   */
+  async aiGenerateWorkflow(prompt: string, context?: string) {
+    return this.client.aiGenerateWorkflow(prompt, context);
+  }
 }
 
 export { compileToWorkflow } from './compile';

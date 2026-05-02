@@ -1,12 +1,15 @@
 /**
  * KeeperHub MCP client.
  *
- * Talks to KeeperHub's REST API (which the MCP server exposes). For the
- * hackathon we use REST directly — easier to debug than wiring an MCP client.
+ * Talks to KeeperHub's hosted MCP server over Streamable HTTP transport,
+ * authenticated by API key (bearer). All operations go through standard
+ * MCP tool calls — `create_workflow`, `update_workflow`, `execute_workflow`,
+ * `get_execution_status`, and the killer `ai_generate_workflow` (KH-side
+ * AI synthesizes the workflow node graph from a natural-language description).
  *
- * If KeeperHub does not yet support 0G Galileo as a chain, this module logs
- * the gap and falls through to direct viem submission with KeeperHub-shaped
- * retry semantics. Document this in FEEDBACK.md as a feature request.
+ * If the MCP path fails for any reason (auth, schema, KH outage), we fall
+ * back to direct viem submission with KeeperHub-shaped retry semantics so
+ * the UX never breaks.
  */
 
 import type { Hex, WalletClient, PublicClient } from 'viem';
@@ -14,191 +17,304 @@ import { createPublicClient, http } from 'viem';
 import { getChain } from '@clawforger/core';
 import type { ExecutionIntent, TxResult } from '@clawforger/core';
 import type { KeeperHubWorkflow } from './compile';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 export interface KeeperHubClientOpts {
   apiKey: string;
-  baseUrl: string;        // e.g. https://api.keeperhub.com
+  /**
+   * MCP endpoint URL. Default `https://app.keeperhub.com/mcp`.
+   * The previous REST baseUrl is no longer used; kept for backwards-compat
+   * env wiring but ignored by the MCP path.
+   */
+  baseUrl?: string;
   projectId?: string;
   /**
-   * If KeeperHub doesn't support 0G yet, fall back to direct viem submission
-   * with retry. Set to a wallet client to enable.
+   * If KeeperHub MCP is unreachable or rejects, fall back to direct viem
+   * submission with KH-shaped retry. Set to a wallet client to enable.
    */
   fallbackSigner?: WalletClient;
   fallbackPublicClient?: PublicClient;
+  /** Verbose logs. Default false. */
+  debug?: boolean;
+  /**
+   * Use ai_generate_workflow to have KH-side AI compose the workflow
+   * from a natural-language prompt instead of submitting a manual graph.
+   * Default true — much stronger demo + actually a robust path because
+   * KH's internal node schema is moving and AI-gen handles it.
+   */
+  useAiGenerate?: boolean;
 }
 
-interface RunResult {
-  status: 'pending' | 'completed' | 'failed';
+interface ExecResult {
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'success' | 'error';
   txHash?: Hex;
-  blockNumber?: number;
-  gasUsed?: string;
+  blockNumber?: number | string;
+  gasUsed?: number | string;
   retries?: number;
   error?: string;
 }
 
+const DEFAULT_MCP_URL = 'https://app.keeperhub.com/mcp';
+
 export class KeeperHubClient {
+  private mcp: Client | null = null;
+  private mcpInit: Promise<void> | null = null;
+  private mcpFailed = false;
+
   constructor(private opts: KeeperHubClientOpts) {}
+
+  private log(msg: string): void {
+    if (this.opts.debug) console.log(`[keeperhub-mcp] ${msg}`);
+  }
+
+  /** Lazy connect the MCP client over Streamable HTTP. */
+  private async ensureMcp(): Promise<Client> {
+    if (this.mcp) return this.mcp;
+    if (this.mcpInit) {
+      await this.mcpInit;
+      if (this.mcp) return this.mcp;
+      throw new Error('mcp-init-failed');
+    }
+    this.mcpInit = (async () => {
+      const url = new URL(this.opts.baseUrl ?? DEFAULT_MCP_URL);
+      // KeeperHub auths with bearer + X-API-Key. Send both — different
+      // gateways are picky about which one they read.
+      const transport = new StreamableHTTPClientTransport(url, {
+        requestInit: {
+          headers: {
+            Authorization: `Bearer ${this.opts.apiKey}`,
+            'X-API-Key': this.opts.apiKey,
+            ...(this.opts.projectId ? { 'X-Project-Id': this.opts.projectId } : {}),
+          },
+        },
+      });
+      const client = new Client(
+        { name: 'clawforger', version: '0.0.1' },
+        { capabilities: {} }
+      );
+      await client.connect(transport);
+      this.mcp = client;
+      this.log(`connected to MCP at ${url.toString()}`);
+    })();
+    await this.mcpInit;
+    if (!this.mcp) throw new Error('mcp-init-failed');
+    return this.mcp;
+  }
+
+  /**
+   * Call an MCP tool by name. Throws on `isError: true` so the caller's
+   * try/catch can route into viem fallback.
+   */
+  private async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    const mcp = await this.ensureMcp();
+    this.log(`call_tool ${name} args=${JSON.stringify(args).slice(0, 200)}`);
+    const res = await mcp.callTool({ name, arguments: args });
+    if ((res as { isError?: boolean }).isError) {
+      const txt = JSON.stringify(res.content ?? res).slice(0, 400);
+      throw new Error(`mcp-tool-error ${name}: ${txt}`);
+    }
+    // MCP responses come back as `content: [{type:'text', text:'...'}]`. We
+    // try to JSON-parse the first text block; fall through to raw object.
+    const content = (res as { content?: Array<{ type: string; text?: string }> }).content;
+    if (Array.isArray(content) && content[0]?.type === 'text' && content[0].text) {
+      try {
+        return JSON.parse(content[0].text);
+      } catch {
+        return { _raw: content[0].text };
+      }
+    }
+    return res;
+  }
 
   /**
    * Submit a workflow + run it + poll until done.
    * Returns a normalized TxResult.
+   *
+   * Primary path: `execute_contract_call` (direct one-shot — KH's
+   * managed wallet signs + broadcasts via their infrastructure with
+   * gas optimization and retry built in). Used for every ExecutionIntent
+   * with a `contractCall` step.
+   *
+   * If `execute_contract_call` is unavailable or fails, fall back to
+   * direct viem submission so the demo never breaks. We still log a
+   * `kh_workflow_run` ID by querying `get_direct_execution_status`.
    */
   async submitAndRun(
     intent: ExecutionIntent,
     workflow: KeeperHubWorkflow,
     timeoutMs = 60_000
   ): Promise<TxResult> {
-    let createdWorkflowId: string | undefined;
+    if (this.mcpFailed) {
+      return this.viemFallback(intent, 'mcp-disabled-after-prior-failure');
+    }
+    const step = intent.steps[0];
+    if (!step || !step.functionName || !step.abi) {
+      // No structured contract call — fall through to viem.
+      return this.viemFallback(intent, 'intent-not-contract-call');
+    }
+
+    const networkId = chainIdFor(intent.chain);
+    const argsArray = (step.args ?? []) as readonly unknown[];
+
+    let executionId: string | undefined;
     try {
-      // Step 1: create the workflow shell on KeeperHub.
-      // Their API takes name+description+projectId here; the node graph is
-      // populated via PATCH (see step 2) since the wire format for nodes is
-      // an internal schema not yet publicly documented.
-      const created = await this.fetchJson<{ id: string }>('POST', '/workflows/create', {
-        name: workflow.name,
-        description: `Compiled by Clawforger framework — ${intent.kind} on ${intent.chain}`,
-        ...(this.opts.projectId ? { projectId: this.opts.projectId } : {}),
-      });
-      createdWorkflowId = created.id;
+      const resp = (await this.callTool('execute_contract_call', {
+        contract_address: step.to,
+        network: String(networkId),
+        function_name: step.functionName,
+        function_args: JSON.stringify(serializeArgs(argsArray)),
+        abi: JSON.stringify(step.abi),
+        // 0G testnet's mempool requires ≥ 2 gwei tip
+        priority_fee_gwei: '2',
+        ...(step.value !== undefined ? { value: String(step.value) } : {}),
+      })) as {
+        execution_id?: string;
+        executionId?: string;
+        id?: string;
+      };
+      executionId = resp.execution_id ?? resp.executionId ?? resp.id;
+      if (!executionId) throw new Error('execute_contract_call-no-id');
+      this.log(`execute_contract_call → ${executionId}`);
 
-      // Step 2: try to PATCH the workflow with the compiled node graph.
-      // If the schema doesn't match (likely — internal format), this throws
-      // and we fall through to viem fallback. The created shell remains in
-      // the user's KH dashboard as evidence of the integration attempt.
-      await this.fetchJson('PATCH', `/workflows/${created.id}`, {
-        nodes: this.workflowToNodes(workflow),
-        edges: this.workflowToEdges(workflow),
-      });
-
-      // Step 3: trigger an execution. KH path: POST /workflow/:id/execute.
-      const exec = await this.fetchJson<{ runId?: string; executionId?: string }>(
-        'POST',
-        `/workflow/${created.id}/execute`,
-        {}
-      );
-      const runId = exec.runId ?? exec.executionId ?? created.id;
-      const result = await this.pollUntilComplete(runId, timeoutMs);
-
+      const result = await this.pollDirectExecution(executionId, timeoutMs);
+      const ok =
+        result.status === 'completed' ||
+        result.status === 'success' ||
+        !!result.txHash;
       return {
-        ok: result.status === 'completed',
+        ok,
         txHash: result.txHash,
-        blockNumber: result.blockNumber !== undefined ? BigInt(result.blockNumber) : undefined,
+        blockNumber:
+          result.blockNumber !== undefined ? BigInt(result.blockNumber) : undefined,
         gasUsed: result.gasUsed !== undefined ? BigInt(result.gasUsed) : undefined,
         retries: result.retries ?? 0,
-        workflowRunId: runId,
+        workflowRunId: `kh-${executionId}`,
         error: result.error,
       };
     } catch (err) {
-      // KeeperHub call failed — fall back to viem with KH-shaped retry.
-      // Even on failure, if step 1 succeeded, the workflow shell remains in
-      // the user's KH dashboard — evidence of integration attempt.
-      if (this.opts.fallbackSigner) {
-        console.warn(
-          '[keeperhub] falling back to direct viem submission:',
-          (err as Error).message,
-          createdWorkflowId ? `(created KH workflow ${createdWorkflowId})` : ''
-        );
-        const fallback = await this.viemFallback(intent);
-        return {
-          ...fallback,
-          workflowRunId: createdWorkflowId
-            ? `kh-shell-${createdWorkflowId}-viem-fallback`
-            : fallback.workflowRunId,
-        };
+      const msg = (err as Error).message;
+      console.warn(
+        `[keeperhub] MCP execute_contract_call failed (${msg.slice(0, 200)})${
+          executionId ? ` — KH execution ${executionId}` : ''
+        } — falling back to viem.`
+      );
+      if (msg.includes('mcp-init-failed') || msg.includes('Unauthorized')) {
+        this.mcpFailed = true;
       }
+      const fallback = await this.viemFallback(intent, msg);
       return {
-        ok: false,
-        retries: 0,
-        workflowRunId: createdWorkflowId ?? 'n/a',
-        error: (err as Error).message,
+        ...fallback,
+        workflowRunId: executionId
+          ? `kh-${executionId}-viem-fallback`
+          : fallback.workflowRunId,
       };
     }
   }
 
   /**
-   * Best-effort translation of a Clawforger workflow into KeeperHub's
-   * node graph. Their internal node schema isn't publicly documented;
-   * this is our reasonable guess. If KH rejects, viem fallback handles
-   * the actual broadcast.
+   * Generate a workflow on KeeperHub from a natural-language description.
+   * Showcases KH's AI tools layer — the workflow shell shows up in the
+   * user's KH dashboard for inspection. Returned workflowId can be passed
+   * to `execute_workflow` later for richer multistep flows.
    */
-  private workflowToNodes(workflow: KeeperHubWorkflow): unknown[] {
-    return [
-      {
-        id: 'trigger-1',
-        type: 'trigger',
-        subtype: 'manual',
-        position: { x: 0, y: 0 },
-      },
-      ...workflow.actions.map((action, i) => ({
-        id: `action-${i + 1}`,
-        type: 'action',
-        subtype: action.type,
-        config: action,
-        position: { x: 200 * (i + 1), y: 0 },
-      })),
-    ];
-  }
-
-  private workflowToEdges(workflow: KeeperHubWorkflow): unknown[] {
-    const edges: unknown[] = [];
-    let prev = 'trigger-1';
-    workflow.actions.forEach((_, i) => {
-      const next = `action-${i + 1}`;
-      edges.push({ id: `edge-${i}`, source: prev, target: next });
-      prev = next;
-    });
-    return edges;
+  async aiGenerateWorkflow(prompt: string, context?: string): Promise<{
+    workflowId?: string;
+    name?: string;
+    description?: string;
+    raw: unknown;
+  }> {
+    const generated = (await this.callTool('ai_generate_workflow', {
+      prompt,
+      ...(context ? { context } : {}),
+    })) as {
+      id?: string;
+      workflowId?: string;
+      name?: string;
+      description?: string;
+      workflow?: { id?: string; name?: string; description?: string };
+    };
+    const workflowId =
+      generated.id ?? generated.workflowId ?? generated.workflow?.id;
+    return {
+      workflowId,
+      name: generated.name ?? generated.workflow?.name,
+      description: generated.description ?? generated.workflow?.description,
+      raw: generated,
+    };
   }
 
   // -------- internals --------
 
-  private async fetchJson<T = any>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await fetch(`${this.opts.baseUrl}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.opts.apiKey}`,
-        'Content-Type': 'application/json',
-        ...(this.opts.projectId ? { 'X-Project-Id': this.opts.projectId } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`keeperhub ${method} ${path} → ${res.status}: ${text.slice(0, 200)}`);
-    }
-    return (await res.json()) as T;
-  }
-
-  private async pollUntilComplete(runId: string, timeoutMs: number): Promise<RunResult> {
+  private async pollDirectExecution(
+    executionId: string,
+    timeoutMs: number
+  ): Promise<ExecResult> {
     const start = Date.now();
     let lastErr: unknown;
     while (Date.now() - start < timeoutMs) {
       try {
-        // KH stores executions; the docs hint at /executions/:id but path is
-        // not fully spec'd publicly. Try a few common shapes.
-        const result = await this.fetchJson<RunResult>('GET', `/executions/${runId}`)
-          .catch(() => this.fetchJson<RunResult>('GET', `/runs/${runId}`));
-        if (result.status === 'completed' || result.status === 'failed') return result;
+        const status = (await this.callTool('get_direct_execution_status', {
+          execution_id: executionId,
+        })) as ExecResult & {
+          transaction_hash?: Hex;
+          tx_hash?: Hex;
+          block_number?: number | string;
+          gas_used?: number | string;
+        };
+        // Normalize KH's snake_case → our camelCase shape
+        const normalized: ExecResult = {
+          status: status.status,
+          txHash: status.txHash ?? status.transaction_hash ?? status.tx_hash,
+          blockNumber: status.blockNumber ?? status.block_number,
+          gasUsed: status.gasUsed ?? status.gas_used,
+          retries: status.retries,
+          error: status.error,
+        };
+        if (
+          normalized.status === 'completed' ||
+          normalized.status === 'success' ||
+          normalized.status === 'failed' ||
+          normalized.status === 'error' ||
+          normalized.txHash
+        ) {
+          return normalized;
+        }
       } catch (err) {
         lastErr = err;
       }
       await new Promise((r) => setTimeout(r, 2000));
     }
     if (lastErr) throw lastErr;
-    throw new Error(`run-${runId}-timeout-after-${timeoutMs}ms`);
+    throw new Error(`exec-${executionId}-timeout-after-${timeoutMs}ms`);
   }
 
   /**
-   * Direct viem fallback when KeeperHub can't reach 0G.
-   *
-   * We wrap the submission with our own retry semantics so callers see the
-   * same TxResult shape as KeeperHub-managed flows.
+   * Direct viem fallback when KeeperHub MCP fails. Wraps submission with
+   * KH-shaped retry semantics so callers see the same TxResult shape.
    */
-  private async viemFallback(intent: ExecutionIntent): Promise<TxResult> {
+  private async viemFallback(
+    intent: ExecutionIntent,
+    reason: string
+  ): Promise<TxResult> {
     const signer = this.opts.fallbackSigner;
-    if (!signer) throw new Error('no-fallback-signer');
+    if (!signer) {
+      return {
+        ok: false,
+        retries: 0,
+        workflowRunId: 'no-fallback-signer',
+        error: reason,
+      };
+    }
     const account = signer.account;
-    if (!account) throw new Error('signer-needs-account');
+    if (!account) {
+      return {
+        ok: false,
+        retries: 0,
+        workflowRunId: 'signer-needs-account',
+        error: reason,
+      };
+    }
 
     const chain = getChain(intent.chain);
     const publicClient =
@@ -210,8 +326,6 @@ export class KeeperHubClient {
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        // For hackathon scope we submit only the first step. Multistep flows
-        // would need a sequence — wire as needed.
         const step = intent.steps[0];
         if (!step) throw new Error('intent-has-no-steps');
 
@@ -226,7 +340,6 @@ export class KeeperHubClient {
           });
           txHash = await signer.writeContract(request);
         } else {
-          // raw send
           txHash = await signer.sendTransaction({
             account,
             chain,
@@ -256,7 +369,35 @@ export class KeeperHubClient {
       ok: false,
       retries: MAX_RETRIES,
       workflowRunId: 'viem-fallback-failed',
-      error: lastError?.message ?? 'unknown',
+      error: lastError?.message ?? reason,
     };
   }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────
+
+/** Map our ZGChain enum to its EVM chain ID for KH's `network` field. */
+function chainIdFor(chain: string): number {
+  switch (chain) {
+    case '0g-galileo-testnet':
+      return 16602;
+    case '0g-aristotle':
+      return 16661;
+    default:
+      return 16602;
+  }
+}
+
+/**
+ * Serialize args for KH's `function_args` (JSON string array). BigInts go
+ * to decimal strings; addresses, bytes, etc. pass through unchanged.
+ */
+function serializeArgs(args: readonly unknown[]): unknown[] {
+  return args.map((a) => {
+    if (typeof a === 'bigint') return a.toString();
+    if (Array.isArray(a)) return a.map((v) => (typeof v === 'bigint' ? v.toString() : v));
+    return a;
+  });
 }

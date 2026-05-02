@@ -143,7 +143,7 @@ async function main() {
 
   const executor = new KeeperHubExecutor({
     apiKey: process.env.KEEPERHUB_API_KEY ?? '',
-    baseUrl: process.env.KEEPERHUB_MCP_URL ?? 'https://api.keeperhub.com',
+    baseUrl: process.env.KEEPERHUB_MCP_URL ?? 'https://app.keeperhub.com/mcp',
     fallbackSigner: wallet,
   });
 

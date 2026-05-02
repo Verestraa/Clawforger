@@ -174,7 +174,8 @@ async function getMemoryFor(tokenId: bigint): Promise<ZGMemory | null> {
 
 const executor = new KeeperHubExecutor({
   apiKey: process.env.KEEPERHUB_API_KEY ?? '',
-  baseUrl: process.env.KEEPERHUB_MCP_URL ?? 'https://api.keeperhub.com',
+  baseUrl: process.env.KEEPERHUB_MCP_URL ?? 'https://app.keeperhub.com/mcp',
+  debug: true,
   projectId: process.env.KEEPERHUB_PROJECT_ID,
   fallbackSigner,
 });
