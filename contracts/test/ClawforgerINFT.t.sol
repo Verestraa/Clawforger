@@ -25,7 +25,7 @@ contract ClawforgerINFTTest is Test {
     function setUp() public {
         mUSDC = new MUSDC();
         address predictedINFT = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        registry = new SkillRegistry(predictedINFT);
+        registry = new SkillRegistry(predictedINFT, address(this));
         inft = new ClawforgerINFT(address(mUSDC), address(registry), treasury, settler);
         require(address(inft) == predictedINFT, "predicted-mismatch");
     }

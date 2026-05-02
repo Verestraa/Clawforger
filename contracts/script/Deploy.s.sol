@@ -35,7 +35,7 @@ contract Deploy is Script {
         // After this script finishes the next contract creation, deployer nonce
         // will increment. Predict iNFT address as nonce+1 (registry is +0).
         address predictedINFT = vm.computeCreateAddress(deployer, deployerNonce + 1);
-        SkillRegistry registry = new SkillRegistry(predictedINFT);
+        SkillRegistry registry = new SkillRegistry(predictedINFT, deployer);
         console.log("SkillRegistry deployed:", address(registry));
 
         // The settler is the trusted x402 facilitator that triggers RoyaltyVault.settle.

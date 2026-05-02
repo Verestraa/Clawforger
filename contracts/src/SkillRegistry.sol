@@ -18,6 +18,13 @@ contract SkillRegistry {
     }
 
     address public immutable INFT_CONTRACT;
+    /// @notice Backend allowed to publish skills on behalf of any iNFT owner.
+    /// @dev    Enables server-driven self-evolution from chat without exposing
+    ///         the user's signing key. Set once at construction time; the
+    ///         designated address can publish skills for any agent it forges
+    ///         a new artifact for. The skill is still attributed to the iNFT
+    ///         owner via `ownerTokenId`, so all royalty flows go to the owner.
+    address public immutable TRUSTED_PUBLISHER;
 
     mapping(bytes32 artifactHash => Skill) private _skills;
     mapping(string tag => bytes32[]) private _byTag;
@@ -40,18 +47,26 @@ contract SkillRegistry {
     error UnknownSkill();
     error NotTrustedRecorder();
 
-    constructor(address inft) {
+    constructor(address inft, address trustedPublisher) {
         INFT_CONTRACT = inft;
+        TRUSTED_PUBLISHER = trustedPublisher;
     }
 
     /// @notice Publish a skill artifact under a Clawforger iNFT
+    /// @dev    Caller must be either the iNFT owner OR the trusted publisher
+    ///         (the server-side forge). Skill ownership is always attributed
+    ///         to `tokenId`'s owner — the trusted publisher cannot redirect
+    ///         royalties to itself.
     function publishSkill(
         bytes32 artifactHash,
         uint256 tokenId,
         string calldata capabilityTag,
         uint256 priceUSDC
     ) external {
-        if (IERC721(INFT_CONTRACT).ownerOf(tokenId) != msg.sender) revert NotINFTOwner();
+        if (
+            IERC721(INFT_CONTRACT).ownerOf(tokenId) != msg.sender &&
+            msg.sender != TRUSTED_PUBLISHER
+        ) revert NotINFTOwner();
         if (_skills[artifactHash].artifactHash != bytes32(0)) revert AlreadyPublished();
 
         _skills[artifactHash] = Skill({

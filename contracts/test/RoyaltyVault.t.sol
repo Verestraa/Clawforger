@@ -29,7 +29,7 @@ contract RoyaltyVaultTest is Test {
         // Predict iNFT address (next deployed contract after this one) so the
         // registry can be deployed with it baked in, matching Deploy.s.sol.
         address predictedINFT = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        registry = new SkillRegistry(predictedINFT);
+        registry = new SkillRegistry(predictedINFT, address(this));
         inft = new ClawforgerINFT(address(mUSDC), address(registry), treasury, settler);
         require(address(inft) == predictedINFT, "predicted-mismatch");
 

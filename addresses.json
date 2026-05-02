@@ -1,6 +1,6 @@
 {
   "_schemaVersion": 2,
-  "_note": "Clawforger is all-in on 0G. Deploy 4: permissionless recordUse + try/catch wrap so x402 settlement never reverts on registry hiccups.",
+  "_note": "Clawforger is all-in on 0G. Deploy 5: SkillRegistry redeployed with TRUSTED_PUBLISHER (server-side forge can publish skills mid-chat for any user-owned agent). iNFT, MUSDC, RoyaltyVaultTemplate unchanged from deploy 4.",
   "deployedAt": "2026-05-02",
   "deployedBy": "0xD0c5cCB47FDf06DA8Bd01A0Cf087C4A34c27b685",
   "chains": {
@@ -9,7 +9,7 @@
       "_rpc": "https://evmrpc-testnet.0g.ai",
       "_explorer": "https://chainscan-galileo.0g.ai",
       "ClawforgerINFT": "0xfe9163ee0a168e30c10c458c3fadf9f8566647fc",
-      "SkillRegistry": "0xa20f408bdc1340ded25f602469b623d22adc201c",
+      "SkillRegistry": "0xdd8b4fbb08327367ddc61aaca5d119d7e5cedb47",
       "RoyaltyVaultTemplate": "0xb1bf1fa01840a031d45152cc37bd70d8fef63b0e",
       "mUSDC": "0xbabaeabce4fbb7a356b2b9e868563da74edfd5f5"
     }
