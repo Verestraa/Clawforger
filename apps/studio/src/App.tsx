@@ -73,7 +73,7 @@ export default function App() {
           <span className="text-zinc-700">·</span>
           <a
             className="hover:text-accent"
-            href="https://github.com/ClawForger/Clawforger"
+            href="https://github.com/Verestraa/Clawforger"
             target="_blank"
             rel="noopener"
           >
