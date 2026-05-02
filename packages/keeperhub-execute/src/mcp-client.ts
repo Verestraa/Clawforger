@@ -105,11 +105,28 @@ export class KeeperHubClient {
   /**
    * Call an MCP tool by name. Throws on `isError: true` so the caller's
    * try/catch can route into viem fallback.
+   *
+   * `timeoutMs` overrides the SDK's 30s default. KH's `execute_contract_call`
+   * waits synchronously for tx submission, which on 0G can take 10–30s; we
+   * bump to 120s by default for tool calls. `ai_generate_workflow` may also
+   * exceed the default while the KH-side LLM streams.
    */
-  private async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  private async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs = 120_000
+  ): Promise<unknown> {
     const mcp = await this.ensureMcp();
     this.log(`call_tool ${name} args=${JSON.stringify(args).slice(0, 200)}`);
-    const res = await mcp.callTool({ name, arguments: args });
+    const res = await mcp.callTool(
+      { name, arguments: args },
+      undefined,
+      {
+        timeout: timeoutMs,
+        resetTimeoutOnProgress: true,
+        maxTotalTimeout: timeoutMs * 2,
+      }
+    );
     if ((res as { isError?: boolean }).isError) {
       const txt = JSON.stringify(res.content ?? res).slice(0, 400);
       throw new Error(`mcp-tool-error ${name}: ${txt}`);
