@@ -13,6 +13,7 @@ import Landing from './routes/Landing';
 import Mint from './routes/Mint';
 import AgentsList from './routes/AgentsList';
 import AgentDetail from './routes/AgentDetail';
+import AgentChat from './routes/AgentChat';
 import Market from './routes/Market';
 import Demo from './routes/Demo';
 
@@ -34,6 +35,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
                 <Route path="/mint" element={<Mint />} />
                 <Route path="/agents" element={<AgentsList />} />
                 <Route path="/agents/:tokenId" element={<AgentDetail />} />
+                <Route path="/agents/:tokenId/chat" element={<AgentChat />} />
                 <Route path="/market" element={<Market />} />
                 <Route path="/demo" element={<Demo />} />
               </Route>

@@ -1,7 +1,8 @@
 import { useParams } from 'react-router';
 import { useState } from 'react';
 import { useReadContract } from 'wagmi';
-import { Brain, Sparkles, History, Coins, ExternalLink } from 'lucide-react';
+import { Link } from 'react-router';
+import { Brain, Sparkles, History, Coins, ExternalLink, MessageCircle } from 'lucide-react';
 import type { Address, Hex } from 'viem';
 import { ABIS, ADDRESSES } from '@/lib/contracts';
 import { loadPayload } from '@/lib/intelligence';
@@ -95,14 +96,23 @@ export default function AgentDetail() {
             </span>
           </div>
         </div>
-        <a
-          href={`${EXPLORER}/address/${ADDRESSES.ClawforgerINFT}`}
-          target="_blank"
-          rel="noopener"
-          className="btn text-xs"
-        >
-          on chain <ExternalLink size={12} />
-        </a>
+        <div className="flex flex-col gap-2 flex-shrink-0">
+          <Link
+            to={`/agents/${tokenIdStr}/chat`}
+            className="btn btn-primary text-xs"
+            title="Talk to this agent via TEE-verified 0G Compute"
+          >
+            <MessageCircle size={12} /> chat
+          </Link>
+          <a
+            href={`${EXPLORER}/address/${ADDRESSES.ClawforgerINFT}`}
+            target="_blank"
+            rel="noopener"
+            className="btn text-xs"
+          >
+            on chain <ExternalLink size={12} />
+          </a>
+        </div>
       </div>
 
       <div className="border-b border-zinc-800 flex gap-1 overflow-x-auto">

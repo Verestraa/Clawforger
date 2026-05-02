@@ -120,8 +120,33 @@ export interface CodeGenResult {
   reasoning?: string;
 }
 
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface ChatResult {
+  /** The assistant's reply content. */
+  content: string;
+  /** TEE chatID returned by the provider — used to verify the response. */
+  chatID: string | null;
+  /** Whether broker.inference.processResponse(chatID) returned valid. */
+  verified: boolean;
+  /** Address of the provider that served the request. */
+  providerAddress: string;
+  /** Model that handled the request, e.g. "qwen/qwen-2.5-7b-instruct". */
+  model: string;
+  /** Full URL of the provider's chat endpoint. */
+  endpoint: string;
+}
+
 export interface Inference {
   generate(opts: InferenceOpts): Promise<string>;
+  /**
+   * Multi-message chat with TEE-verification metadata. Implementations
+   * may pass through to generate() for backward compat.
+   */
+  chat?(messages: ChatMessage[]): Promise<ChatResult>;
   generateCode(opts: CodeGenOpts): Promise<CodeGenResult>;
 }
 

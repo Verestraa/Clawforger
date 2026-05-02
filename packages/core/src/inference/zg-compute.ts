@@ -14,7 +14,14 @@
 
 import { ethers } from 'ethers';
 import { createZGComputeNetworkBroker } from '@0gfoundation/0g-compute-ts-sdk';
-import type { CodeGenOpts, CodeGenResult, Inference, InferenceOpts } from '../types';
+import type {
+  ChatMessage,
+  ChatResult,
+  CodeGenOpts,
+  CodeGenResult,
+  Inference,
+  InferenceOpts,
+} from '../types';
 
 // ──────────────────────────────────────────────────────────────────
 // Mock — deterministic offline stand-in
@@ -25,6 +32,18 @@ export class MockInference implements Inference {
     const stamp = `[mock] ${(opts.prompt ?? '').slice(0, 40)}`;
     if (opts.jsonMode) return JSON.stringify({ stamp, ok: true });
     return `${stamp} — abstract: This is a mock summary.`;
+  }
+
+  async chat(messages: ChatMessage[]): Promise<ChatResult> {
+    const last = messages[messages.length - 1];
+    return {
+      content: `[mock reply] echo of: ${last?.content?.slice(0, 60) ?? ''}`,
+      chatID: null,
+      verified: false,
+      providerAddress: '0x0',
+      model: 'mock',
+      endpoint: 'mock://local',
+    };
   }
 
   async generateCode(opts: CodeGenOpts): Promise<CodeGenResult> {
@@ -280,6 +299,75 @@ export class ZGComputeInference implements Inference {
           (err as Error).message.slice(0, 80)
         );
         return this.fallback.generateCode(opts);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Multi-message chat with full TEE-verification metadata.
+   *
+   * Used by the Studio's /agents/:id/chat route — returns the chatID and
+   * verified flag so the UI can show a "TEE verified ✓" seal next to each
+   * assistant turn. Falls back to a mock reply if the broker is down.
+   */
+  async chat(messages: ChatMessage[]): Promise<ChatResult> {
+    try {
+      const provider = await this.pickProvider();
+      await this.ensureProvider(provider.providerAddress);
+
+      const { endpoint, model } = await this.broker.inference.getServiceMetadata(
+        provider.providerAddress
+      );
+      const headers = await this.broker.inference.getRequestHeaders(
+        provider.providerAddress
+      );
+
+      this.log(`POST ${endpoint}/chat/completions (chat, ${messages.length} msgs, model=${model})`);
+      const response = await fetch(`${endpoint}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ messages, model }),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`zg-compute ${response.status}: ${text.slice(0, 200)}`);
+      }
+      const data = (await response.json()) as any;
+      const content = data?.choices?.[0]?.message?.content;
+      if (typeof content !== 'string') throw new Error('zg-compute-no-content');
+
+      const chatID =
+        response.headers.get('ZG-Res-Key') ||
+        response.headers.get('zg-res-key') ||
+        data?.id ||
+        null;
+
+      let verified = false;
+      if (chatID) {
+        try {
+          verified = !!(await this.broker.inference.processResponse(
+            provider.providerAddress,
+            chatID
+          ));
+          this.log(`TEE verify (${chatID}): ${verified ? 'VALID' : 'INVALID'}`);
+        } catch (err) {
+          this.log(`TEE verify error: ${(err as Error).message.slice(0, 80)}`);
+        }
+      }
+
+      return {
+        content,
+        chatID,
+        verified,
+        providerAddress: provider.providerAddress,
+        model,
+        endpoint,
+      };
+    } catch (err) {
+      if (this.opts.fallbackToMock !== false) {
+        console.warn('[zg-compute] chat → mock fallback:', (err as Error).message);
+        return this.fallback.chat!(messages);
       }
       throw err;
     }

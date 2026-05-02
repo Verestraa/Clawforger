@@ -24,6 +24,7 @@ import { LocalSkillIndex } from './registry';
 import ClawforgerINFTAbi from '@clawforger/core/abis/ClawforgerINFT.json' assert { type: 'json' };
 import RoyaltyVaultAbi from '@clawforger/core/abis/RoyaltyVault.json' assert { type: 'json' };
 import { KeeperHubExecutor } from '@clawforger/keeperhub-execute';
+import { ZGComputeInference } from '@clawforger/core';
 
 const port = Number(process.env.PORT ?? 3700);
 const facilitatorUrl = process.env.X402_FACILITATOR_URL ?? 'http://localhost:3701';
@@ -124,6 +125,19 @@ const fallbackSigner = fallbackPk
     })
   : undefined;
 
+// Live agent inference. Bridge endpoint /admin/chat uses this so the
+// 0G Compute key stays out of the browser bundle.
+const inference =
+  fallbackPk
+    ? new ZGComputeInference({
+        privateKey: fallbackPk,
+        rpcUrl: process.env.ZG_GALILEO_RPC,
+        modelHint: process.env.ZG_COMPUTE_MODEL ?? 'qwen',
+        fallbackToMock: true,
+        debug: true,
+      })
+    : null;
+
 const executor = new KeeperHubExecutor({
   apiKey: process.env.KEEPERHUB_API_KEY ?? '',
   baseUrl: process.env.KEEPERHUB_MCP_URL ?? 'https://api.keeperhub.com',
@@ -168,6 +182,53 @@ app.post('/publish', async (c) => {
   const skill = parsed.data as unknown as SkillManifest;
   index.publish(skill);
   return c.json({ ok: true, skill });
+});
+
+// ── Admin: chat with a live agent ─────────────────────────────────
+//
+// Studio POSTs the agent's persona + conversation history; the server
+// proxies through ZGComputeInference (TEE-verified qwen-2.5-7b on 0G
+// Compute). Returns the assistant reply + chatID + verified flag so the
+// UI can render a TEE-verified seal next to each turn.
+const ChatRoleSchema = z.enum(['system', 'user', 'assistant']);
+const ChatMessageSchema = z.object({
+  role: ChatRoleSchema,
+  content: z.string().max(10_000),
+});
+const ChatRequestSchema = z.object({
+  systemPrompt: z.string().max(10_000).optional(),
+  messages: z.array(ChatMessageSchema).min(1).max(50),
+});
+
+app.post('/admin/chat', async (c) => {
+  if (!inference) {
+    return c.json({ ok: false, reason: 'inference-not-configured' }, 500);
+  }
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ ok: false, reason: 'invalid-json' }, 400);
+  const parsed = ChatRequestSchema.safeParse(body);
+  if (!parsed.success) return c.json({ ok: false, reason: parsed.error.message }, 400);
+
+  // Prepend the agent's persona as a system message
+  const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+  if (parsed.data.systemPrompt) {
+    messages.push({ role: 'system', content: parsed.data.systemPrompt });
+  }
+  messages.push(...parsed.data.messages);
+
+  try {
+    const result = await inference.chat!(messages);
+    return c.json({
+      ok: true,
+      content: result.content,
+      chatID: result.chatID,
+      verified: result.verified,
+      providerAddress: result.providerAddress,
+      model: result.model,
+    });
+  } catch (err) {
+    return c.json({ ok: false, reason: (err as Error).message }, 500);
+  }
 });
 
 // ── Admin: mint via KeeperHub ─────────────────────────────────────
