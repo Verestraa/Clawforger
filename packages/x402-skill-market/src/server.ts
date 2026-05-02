@@ -84,11 +84,44 @@ async function syncFromChain(): Promise<void> {
     for (const log of logs) {
       const artifactHash = log.args.artifactHash as Hex;
       if (index.get(artifactHash)) continue; // already known
+
+      // The chain event only carries hash + tag + price + owner. The
+      // JSON schemas live INSIDE the encrypted artifact blob on storage.
+      // Try to decrypt + extract schemas so the marketplace listing tells
+      // the LLM the right input keys (the alternative is empty schemas
+      // → "inputs: {}" → buyers guess key names + skill returns 0).
+      let schemaIn: Record<string, unknown> = {
+        type: 'object',
+        properties: {},
+        additionalProperties: true,
+      };
+      let schemaOut: Record<string, unknown> = {
+        type: 'object',
+        properties: {},
+        additionalProperties: true,
+      };
+      if (encryptionKeyPromise) {
+        try {
+          const blob = await storage.fetchBlob(artifactHash);
+          const key = await encryptionKeyPromise;
+          const artifact = (await decrypt(key, blob)) as
+            | { schemaIn?: Record<string, unknown>; schemaOut?: Record<string, unknown> }
+            | null;
+          if (artifact?.schemaIn) schemaIn = artifact.schemaIn;
+          if (artifact?.schemaOut) schemaOut = artifact.schemaOut;
+        } catch {
+          // Blob not in local storage or decryption mismatch — fall through
+          // to empty schemas. Skills published on a different machine /
+          // server seed will hit this; the buy still works, just without
+          // input-key hints.
+        }
+      }
+
       const skill: SkillManifest = {
         hash: artifactHash,
         capabilityTag: log.args.capabilityTag as string,
-        schemaIn: { type: 'object', properties: {}, additionalProperties: true },
-        schemaOut: { type: 'object', properties: {}, additionalProperties: true },
+        schemaIn,
+        schemaOut,
         priceUSDC: Number(log.args.priceUSDC as bigint),
         ownerINFT: {
           contractAddress: CLAWFORGER_INFT as Address,
@@ -97,8 +130,10 @@ async function syncFromChain(): Promise<void> {
         },
       };
       index.publish(skill);
+      const props = (schemaIn.properties as Record<string, unknown>) ?? {};
+      const propCount = Object.keys(props).length;
       console.log(
-        `[skill-market] synced ${skill.capabilityTag} (${artifactHash.slice(0, 10)}…) from chain`
+        `[skill-market] synced ${skill.capabilityTag} (${artifactHash.slice(0, 10)}…) from chain — schema: ${propCount} props`
       );
     }
   } catch (err) {
