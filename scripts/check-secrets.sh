@@ -32,6 +32,9 @@ SKIP_PATHS=(
   '\.lock$'
   'bun\.lock'
   'package-lock\.json'
+  'apps/studio/src/routes/Demo\.tsx'  # Public-facing demo: hardcoded chainscan tx hashes (public block data, not private keys)
+  'scripts/decrypt-skill\.ts'         # Demo-time helper that takes a skill artifact hash CLI arg
+  'clawforger-strategy\.md'           # Test playbook with sample tx hashes
 )
 
 STAGED=$(git diff --cached --name-only --diff-filter=ACM)
