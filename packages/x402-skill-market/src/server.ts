@@ -757,7 +757,27 @@ app.post('/admin/chat', async (c) => {
           ``,
           ...otherSkills.map((s) => {
             const priceMUSDC = (s.priceUSDC / 1_000_000).toFixed(4);
-            return `  - capability: "${s.capabilityTag}" — owner: iNFT #${s.ownerINFT.tokenId} — price: ${priceMUSDC} mUSDC`;
+            // Surface the input schema so the LLM knows the EXACT key
+            // names to pass. Without this, DeepSeek guesses (e.g. uses
+            // "token" when the skill expects "symbol") and the skill
+            // falls into its catch path returning empty data.
+            const props =
+              ((s.schemaIn as Record<string, unknown> | undefined)
+                ?.properties as Record<string, { type?: string }> | undefined) ??
+              {};
+            const required =
+              ((s.schemaIn as Record<string, unknown> | undefined)
+                ?.required as string[] | undefined) ?? [];
+            const inputSig =
+              Object.keys(props).length > 0
+                ? `{${Object.entries(props)
+                    .map(([k, v]) => {
+                      const isRequired = required.includes(k);
+                      return `${k}${isRequired ? '' : '?'}: ${v?.type ?? 'any'}`;
+                    })
+                    .join(', ')}}`
+                : '{}';
+            return `  - capability: "${s.capabilityTag}" — owner: iNFT #${s.ownerINFT.tokenId} — price: ${priceMUSDC} mUSDC — inputs: ${inputSig}`;
           }),
         ].join('\n')
       : '';
