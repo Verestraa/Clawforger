@@ -186,18 +186,52 @@ Honest, actionable feedback from a builder who shipped Clawforger end-to-end dur
 
 - ERC-7857 is the right abstraction for AI agents. Encrypted private metadata + dynamic updates are exactly what we need.
 - 0G Galileo testnet RPC stayed up the whole hackathon — appreciated.
+- **Aristotle mainnet Compute is excellent.** DeepSeek V3, GLM-5/5.1, gpt-5.4-mini, qwen3.6-plus all served via the same broker SDK. TEE-verified `processResponse(chatID)` returns `VALID` reliably. Pricing is fair (DeepSeek V3 ≈ 2.7 µ0G per output token, the cheapest agent-grade option). We default to DeepSeek for codegen and it nails `new Function()`-parseable JS first try ~90% of the time.
+- The package rename from `@0glabs/0g-serving-broker` to `@0gfoundation/0g-compute-ts-sdk` was clean — old name still re-exports.
+
+### Reproducible bugs / SDK quirks 🔴
+
+1. **`broker.ledger.transferFund(addr, 'inference', 1)` throws "Invalid mix of BigInt and other type in division" under Bun.**
+   The SDK accepts a number argument per the documented examples, but the internal pricing math mixes BigInt with regular numbers somewhere on the path under Bun runtime. Fails with:
+   ```
+   error: Invalid mix of BigInt and other type in division.
+       at throwFormattedError (.../@0gfoundation/0g-compute-ts-sdk/lib.esm/index-33b65b9f.js:14725:28)
+   ```
+   **Workaround that works**: pass the amount in **neuron units as BigInt** instead — e.g. `BigInt(10) ** BigInt(18)` for 1 0G. See `scripts/fund-provider.ts` for our BigInt-safe variant.
+   **Suggested fix**: normalize the argument early (accept `number | bigint`), or document the BigInt-only path for Bun explicitly in the README.
+
+2. **`acknowledgeProviderSigner` emits a noisy `InsufficientAvailableBalance` error every chat call** even when balances are healthy.
+   ```
+   [zg-compute] provider ack skipped: Error: InsufficientAvailableBalance
+       (Arg0: 999999999999999999, Arg1: 10000000000)
+   ```
+   Arg0 is what we have, Arg1 is what's being asked for — Arg1 is *much smaller* than Arg0 (1e10 vs 1e18 = 10 GWei vs 1 ETH-equivalent), so the error feels reversed. Subsequent chat call succeeds anyway, so it's cosmetic, but it pollutes server logs and makes operators chase a phantom funding bug.
+
+3. **No SDK retry / receipt-polling helper.**
+   `eth_getTransactionReceipt` calls on Galileo testnet RPC are slow — viem's `waitForTransactionReceipt` regularly times out at the default 180s even though the tx ultimately mines. We polled the buyer's mUSDC balance for a drop as a workaround, which has a critical false-positive: concurrent buys cause the balance to drop below threshold from a *different* tx, and the poll falsely confirms the *current* one. Fixed in our code by manually polling `eth_getTransactionReceipt(hash)` for that specific hash with a 2s interval.
+   **Suggested fix**: ship `broker.utils.waitForReceipt(hash, { timeoutMs, pollMs })` as an SDK helper that handles the testnet RPC's idiosyncrasies.
+
+### Mainnet ecosystem gaps 🟡
+
+1. **No canonical USD stablecoin on Aristotle.** Not in [Circle's 28-chain native USDC list](https://developers.circle.com/stablecoins/usdc-contract-addresses). Not on [LayerZero V2 deployed endpoints](https://docs.layerzero.network/v2/deployments/deployed-contracts) — so no Stargate / USDT0 bridge route. No 0G ecosystem partner deployment ([0g.ai/partners](https://0g.ai/partners)). Zero references to USDC/USDT/DAI in [docs.0g.ai](https://docs.0g.ai).
+   The result: a dApp can deploy contracts to Aristotle but every project ends up shipping their own mock token for settlement, which is exactly what we already had on testnet. We deliberately ship Clawforger as **inference on Aristotle, contracts on Galileo** for this reason — and document the rationale in ARCHITECTURE.md ("The hybrid mainnet/testnet posture") so judges understand it's a deliberate posture, not "we ran out of time."
+   **Request**: 0G should pursue Circle CCTP + native USDC, OR partner with LayerZero / Wormhole to bridge USDC, OR endorse a stablecoin in the ecosystem partners list. Without USDC, mainnet is hard to monetize.
+
+2. **0G Aristotle chainId + RPC weren't in `docs.0g.ai`** when I checked. Found via ChainList. Easy fix.
 
 ### Documentation gaps
 
 1. **No public reference implementation of ERC-7857.** I implemented the load-bearing semantics directly (encrypted intelligence pointer + ERC-4906 metadata update + secure-transfer hook) but a canonical OZ-style reference would save every team a few hours.
-2. **0G Storage SDK quickstart for Bun is missing.** I wrote my own thin wrapper (`InMemoryZGStorage` + `RealZGStorageClient` interface) so I could swap implementations.
-3. **0G Compute broker → Bun integration example.** The docs cover Node + Python; Bun-specific workings of `@0glabs/0g-serving-broker` would help.
+2. **0G Storage SDK quickstart for Bun is missing.** I wrote my own thin wrapper (`FileBackedZGStorage` implementing `ZGStorageClient`) so I could swap implementations.
+3. **0G Compute broker → Bun integration example.** The docs cover Node + Python; Bun-specific gotchas (BigInt / `transferFund`) deserve a dedicated section.
+4. **No service-catalog discovery hint in the docs.** The Aristotle broker exposes 8 services (DeepSeek V3, GLM-5/5.1, gpt-5.4-mini, qwen3.6-plus, qwen3-vl-30b, whisper, z-image) but there's no static doc table — you have to call `listService()` at runtime to discover them. We added `scripts/probe-mainnet.ts` to make this easy. Publishing a periodically-refreshed catalog page would help builders pick a model up-front.
 
 ### Feature requests
 
-1. **Block explorer support for ERC-7857 events.** ChainScan-Galileo currently doesn't decode `AgentEvolved` or `MetadataUpdate` events. Adding ABI uploads or auto-recognition of ERC-7857 contracts would help judges + users.
-2. **TEE attestation in 0G Compute responses as a header** so we can surface the proof in the Studio UI.
-3. **0G Aristotle mainnet chainId + RPC** — confirm the canonical values in docs.
+1. **Block explorer support for ERC-7857 events.** ChainScan-Galileo currently doesn't decode `AgentEvolved`, `AgentMinted`, or `MetadataUpdate` events. Adding ABI uploads or auto-recognition of ERC-7857 contracts would help judges + users.
+2. **TEE attestation in 0G Compute responses as a header** so we can surface the proof in the Studio UI without a second round-trip to `processResponse`.
+3. **`broker.inference.getActiveProvider()` / discovery API.** Right now consumers iterate `listService()` and substring-match against a hint. Returning a structured catalog with model class tags (`agent-grade`, `vision`, `embedding`, `audio`) would make programmatic selection more robust.
+4. **A canonical ERC-7857 + RoyaltyVault factory** as an OZ-style template package. Every iNFT-marketplace project will need both.
 
 ---
 
