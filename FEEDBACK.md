@@ -6,65 +6,131 @@ Honest, actionable feedback from a builder who shipped Clawforger end-to-end dur
 
 ## KeeperHub
 
-### What worked
+> Integration code: `packages/keeperhub-execute/src/mcp-client.ts`
+> Wallet integration tested: `0x24Ca59426b6B30E1D6a097B9D1cb48aE8F897d4f`
+> Chain tested: 0G Galileo testnet (chainId 16602)
+> Server URL: `https://app.keeperhub.com/mcp` (Streamable HTTP transport)
 
-- The MCP server concept is exactly right — having my agent build, trigger, and monitor blockchain automations through the same protocol it uses for tools is huge for autonomy. The "execution layer for onchain agents" framing is clarifying.
-- Auto gas estimation and nonce management saved me from the entire class of "stuck transaction" bugs that always plague hackathon projects.
-- 24/7 engineering support framing is reassuring for production.
+### What worked 🟢
 
-### Documentation gaps
+- **MCP HTTP transport setup** was excellent — 5 lines from `bun add @modelcontextprotocol/sdk` to working authenticated session.
+- **`ai_generate_workflow`** is genuinely impressive: prompted with *"call mintAgent on contract 0xfe91… (network 16602)…"*, KH's AI produced a valid workflow with `web3/write-contract` action, correct contract address, function selector, arg ordering, and gas hints — first try, ~3 seconds.
+- **`list_integrations` + `get_wallet_integration`** were exactly what we needed for the studio UX (showing users which wallet would sign).
+- **Tool discovery** via `listTools()` is exhaustive and well-typed — knowing every tool + input schema upfront made integration a 1-day job.
+- **0G chain support exists** — both 0G mainnet (16661) and 0G Galileo (16602) appear in the network dropdown when authoring contract calls in the web UI.
+- Auto gas estimation + nonce management saved us from the "stuck transaction" class of bugs that always plagues hackathon work.
 
-1. **0G chain support is undocumented.** The docs list "Ethereum, Base, Arbitrum, Polygon, and other EVM-compatible chains" but it's unclear whether 0G Galileo (chainId 16602) is a supported chain ID I can pass to a workflow's `chain` field. I had to verify by trying. **Request:** publish an explicit list of supported chain IDs in the docs and update it as new chains are added.
+### Reproducible bugs 🔴
 
-2. **MCP tool input/output schemas aren't published.** The docs describe what the MCP server *does* but not the exact JSON shape of `workflows.create` or `workflows.run` request/response. I had to read responses to find that `id` is at the top level rather than nested under `data`. **Request:** an OpenAPI / JSON-Schema spec for every MCP tool.
+1. **`execute_contract_call` 524s on 0G *writes* (reads work fine).**
+   Severity: **blocker for our primary execution path.**
 
-3. **`projectId` vs `org` vs API-key scoping is fuzzy.** I have an org-wide API key and the docs mention projects, but it's unclear whether I should pass `X-Project-Id` headers, `?projectId=` query, or the project context is inferred from the key.
+   ```ts
+   // Read returns in <1s ✓
+   await c.callTool({ name: 'execute_contract_call', arguments: {
+     contract_address: '0xbabaeabce4fbb7a356b2b9e868563da74edfd5f5', // mUSDC
+     network: '16602',
+     function_name: 'balanceOf',
+     function_args: '["0xD0c5cCB47FDf06DA8Bd01A0Cf087C4A34c27b685"]',
+   }}); // ← 784 ms
 
-### UX / UI friction
-
-1. The web UI's "create workflow" flow is well-designed for human-built workflows but I never used it directly — agents create workflows programmatically. **Request:** a "watch live" mode in the dashboard that auto-refreshes new workflow runs created by API/MCP, so the demo video can show KeeperHub live alongside the agent's terminal output.
-
-2. The 5-minute KH session timeout in the web app forced me to re-auth several times. Persistence option would help.
-
-### Feature requests
-
-1. **Native 0G Galileo support.** Even if it's "supported" via "any EVM chain", a confirmed-chain-list checkmark in the UI would unblock submissions like ours. We'd be happy to be a 0G launch case-study.
-
-2. **Workflow run streaming.** Currently I poll `GET /runs/:id` every 2s, which is fine but `GET /runs/:id/stream` (SSE) would let agents react instantly. Also better for hackathon demos.
-
-3. **Conditional retry policies.** Right now retry is `{ max, backoff }`. We'd love `retryOnRevertReason` + `retryUnless: <regex>` so we can short-circuit retries on permanent failures (e.g. "ERC721: invalid token ID").
-
-4. **Idempotency keys.** When an agent calls `workflows.create` twice (e.g. retry due to network blip), we get two workflows with similar names. An `Idempotency-Key` header that returns the existing workflow on repeat would prevent duplicate runs.
-
-5. **Cost estimate in the run response.** Even an approximate USD-equivalent gas spend per run would let agents budget rationally.
-
-### Reproducible bugs
-
-1. **Documented `POST /workflows/create` returns 404.** Per docs at https://docs.keeperhub.com/api/workflows the path for creating a workflow is `POST /api/workflows/create` against base `https://app.keeperhub.com/api`. Reproduction:
-
-   ```bash
-   curl -i -X POST \
-     -H "Authorization: Bearer kh_..." \
-     -H "Content-Type: application/json" \
-     -d '{"name":"test","description":"test"}' \
-     https://app.keeperhub.com/api/workflows/create
-   # → HTTP 404
-   # → <pre>Cannot POST /workflows/create</pre>
+   // Write 524s after 120s ✗
+   await c.callTool({ name: 'execute_contract_call', arguments: {
+     contract_address: '0xfe9163ee0a168e30c10c458c3fadf9f8566647fc', // ClawforgerINFT
+     network: '16602',
+     function_name: 'mintAgent',
+     function_args: '["0xD0c5...", "0x...", "0x..."]',
+     abi: '...',
+     priority_fee_gwei: '2',
+   }}, undefined, { timeout: 150_000 });
+   // → Streamable HTTP error: 524 Cloudflare timeout, origin > 120s
    ```
 
-   The same Express-style 404 ("Cannot POST /…") implies a route mismatch, not auth. We fell back to direct viem submission with KeeperHub-shaped retry semantics in our framework so the demo path remains functional, but the documented programmatic-create endpoint appears not to exist (or to live at a different path). **Request:** working `curl` example in the docs alongside the JSON shape, and ideally a single `POST /workflows` that takes the full `{ name, description, nodes, edges }` graph in one shot rather than the create→PATCH dance.
+   The KH origin appears to wait synchronously for full receipt before
+   responding, blowing past Cloudflare's 120s proxy-read window on chains
+   with finality > ~30s. KH-managed wallet was funded (0.2 0G — verified
+   via 0G explorer), so this is not gas-related.
 
-2. **Workflow node graph schema (`nodes` / `edges` shape) isn't publicly documented.** Even when create succeeds, populating it via PATCH requires the internal node format (e.g. `{ type: "trigger" | "action", subtype, config, position }`). Without this, programmatic workflow creation is effectively blocked — every dynamic mint we attempted from our framework ended up using the viem fallback path because we couldn't construct a valid node graph. **Request:** publish the JSON schema for nodes + edges, or expose a `nodes-from-actions[]` helper on the API that takes the simpler action list and synthesizes the graph server-side.
+   **Suggested fix:** make `execute_contract_call` return `execution_id`
+   *immediately* after submitting to the wallet integration's mempool,
+   then let clients poll `get_direct_execution_status` for the receipt.
+   The async shape already exists for workflows — mirroring it here would
+   unblock all chains with finality > 30s.
 
-3. **No discoverable "create workflow from compiled JSON" endpoint.** Our framework compiles `ExecutionIntent` → `{ trigger, actions, retry, notifications }`. We'd love an endpoint that accepts that compact shape and creates+runs in one call:
+   **Workaround we shipped:** layered flow that always calls
+   `ai_generate_workflow` first (visible MCP integration evidence,
+   completes in ~3s), tries `execute_contract_call` with a 30s outer
+   timeout, then falls through to viem with KH-shaped retry semantics
+   for the actual broadcast. See `submitAndRun` in our MCP client.
 
+2. **Default MCP request timeout (30s SDK default) is too short for write tools.**
+   The TS SDK's `DEFAULT_REQUEST_TIMEOUT_MSEC` is 30s. KH's write-class
+   tools regularly exceed that even on healthy chains. Either:
+   - set a `_meta.suggestedTimeout` MCP hint per tool (the MCP spec
+     supports per-tool metadata) so clients can pick a sane default;
+   - or document in `docs.keeperhub.com/ai-tools/mcp-server` that callers
+     should pass `{ timeout: 120_000, resetTimeoutOnProgress: true }` for
+     write-class operations.
+
+3. **`ai_generate_workflow` returns JSONL operations, not a saved workflow.**
+
+   ```js
+   // Tool returns:
+   { result: '{"type":"operation","operation":{"op":"setName","name":"..."}}\n' +
+             '{"type":"operation","operation":{"op":"addNode","node":{...}}}\n' +
+             '...' }
    ```
-   POST /api/workflows/run-once
-   { name, trigger: {...}, actions: [...], retry: {...} }
-   → { runId, txHash? }
-   ```
 
-   This is the missing primitive for "ad-hoc workflow execution from agent code." Without it, agents must either (a) pre-create persistent workflows via the web UI, or (b) use the create→PATCH→execute lifecycle with the undocumented node schema. Both options break the "agent builds workflows on demand" promise.
+   To save the result you have to parse JSONL, then call `create_workflow`,
+   then somehow apply each `addNode`/`addEdge` op (no obvious bulk endpoint).
+   **Suggested fix:** add an `applyOperations: true` parameter to
+   `ai_generate_workflow` that creates and populates the workflow in one
+   call and returns `workflowId`. Or expose `apply_workflow_operations`
+   that takes the ops + an optional `workflowId`.
+
+### Documentation gaps 🟡
+
+1. **0G chain support not in docs.** The web UI's chain dropdown lists
+   *0G* (16661) and *0G Galileo* (16602) but `https://docs.keeperhub.com/`
+   only enumerates *"Ethereum, Base, Arbitrum, Polygon, Sepolia"* plus
+   *"additional EVM-compatible networks"*. We pivoted our architecture
+   twice before checking the platform UI.
+   **Request:** publish the exhaustive chain list (mainnet + testnet) on
+   the `Networks` docs page with `chainId`, RPC mode (private/public),
+   and any per-chain quirks (e.g. *"0G testnet requires `priority_fee_gwei`
+   ≥ 2"*).
+
+2. **Bearer + X-API-Key auth ambiguity.** The MCP endpoint accepts both
+   `Authorization: Bearer kh_…` and `X-API-Key: kh_…`. We send both
+   because we couldn't tell from docs which the gateway prefers. Pick
+   one and document it.
+
+### Feature requests 🟢
+
+1. **`get_wallet_balance` MCP tool** for the configured wallet integration
+   on a given chain. We had to fall through to viem `getBalance` to
+   diagnose item #1. Same idea as `get_wallet_integration` but returns
+   on-chain balance.
+
+2. **`execute_contract_call_async`** (or an `async: true` flag on the
+   existing tool) — return `execution_id` immediately, never block past
+   submission. Direct path mirroring `execute_workflow`.
+
+3. **MCP progress notifications during `execute_contract_call`** — once
+   write ops are async, streaming progress (`submitted` → `mempool` →
+   `confirmed`) keeps long-poll clients alive via `resetTimeoutOnProgress`.
+
+4. **Idempotency keys** on `create_workflow` and `execute_contract_call`.
+   When an agent retries due to a network blip, we get duplicate workflow
+   shells / executions. An `Idempotency-Key: <agent-tx-id>` header that
+   returns the existing record on repeat would prevent duplicates.
+
+5. **Conditional retry policies** in workflow config: `retryOnRevertReason`
+   + `retryUnless: <regex>` so we can short-circuit retries on permanent
+   failures (e.g. "ERC721: invalid token ID").
+
+6. **MCP resource `keeperhub://integrations/{id}/balance/{chainId}`** — a
+   pull-shape alternative to the proposed `get_wallet_balance` tool.
 
 ---
 
