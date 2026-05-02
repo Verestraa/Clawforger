@@ -9,7 +9,7 @@ const NAV = [
   { to: '/agents', label: 'agents' },
   { to: '/market', label: 'market' },
   { to: '/demo', label: 'demo' },
-];
+];   
 
 export default function App() {
   const { pathname } = useLocation();
