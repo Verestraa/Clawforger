@@ -355,9 +355,14 @@ function Turn({ turn, agentName }: { turn: ChatTurn; agentName: string }) {
 
 /**
  * Tiny inline-markdown renderer. Handles only what agent replies actually
- * use: [text](url), **bold**, `code`, and bare URLs / 0x-tx-hashes.
- * Auto-links 0x… hex strings to chainscan-galileo since the consumer
- * directive emits raw txHashes in receipts.
+ * use: [text](url), **bold**, `code`, and bare URLs.
+ *
+ * Deliberately does NOT auto-link bare 0x hex strings. Reason: chat
+ * replies carry both tx hashes AND skill artifact hashes (the latter
+ * live on 0G Storage, not on chain). Auto-linking everything sent
+ * users to chainscan /notfound for skill hashes. The consumer directive
+ * now emits explicit markdown links [short…](url) for txes — those
+ * land here and render fine.
  */
 function RichText({ text }: { text: string }) {
   if (!text) return null;
@@ -375,15 +380,12 @@ function RichText({ text }: { text: string }) {
   const linkRe = /\[([^\]]+)\]\(([^)]+)\)/y;
   const boldRe = /\*\*([^*]+)\*\*/y;
   const codeRe = /`([^`]+)`/y;
-  // Bare 0x… hex (40+ chars) → auto-link to chainscan tx page
-  const txRe = /(0x[a-fA-F0-9]{64})/y;
   // Bare https URL
   const urlRe = /(https?:\/\/[^\s)]+)/y;
   while (i < text.length) {
     linkRe.lastIndex = i;
     boldRe.lastIndex = i;
     codeRe.lastIndex = i;
-    txRe.lastIndex = i;
     urlRe.lastIndex = i;
     const link = linkRe.exec(text);
     if (link && link.index === i) {
@@ -425,25 +427,6 @@ function RichText({ text }: { text: string }) {
         </code>
       );
       i += code[0].length;
-      continue;
-    }
-    const tx = txRe.exec(text);
-    if (tx && tx.index === i) {
-      flush();
-      const hash = tx[1]!;
-      parts.push(
-        <a
-          key={i}
-          href={`https://chainscan-galileo.0g.ai/tx/${hash}`}
-          target="_blank"
-          rel="noopener"
-          className="text-accent underline hover:text-accent/80 font-mono"
-          title={hash}
-        >
-          {hash.slice(0, 10)}…{hash.slice(-6)}
-        </a>
-      );
-      i += tx[0].length;
       continue;
     }
     const url = urlRe.exec(text);

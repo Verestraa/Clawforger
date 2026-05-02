@@ -1648,12 +1648,6 @@ async function purchaseSkillForAgent(
   );
 
   // Sign + submit transfer from buyer.
-  //
-  // 0G testnet RPC is slow on receipt retrieval — viem's
-  // waitForTransactionReceipt frequently times out before the receipt is
-  // visible, even though the tx lands. Poll buyer's balance directly:
-  // once it has decreased by `price` (or below) we know the transfer
-  // settled. More reliable than receipt polling on this chain.
   let txHash: Hex;
   try {
     const { request } = await publicClient.simulateContract({
@@ -1672,29 +1666,47 @@ async function purchaseSkillForAgent(
     };
   }
 
-  // Poll: wait for buyer's balance to drop by `price` (or timeout 90s).
+  // Poll the SPECIFIC tx hash for a receipt. Earlier impl polled the
+  // buyer's balance for a drop, which has a critical false-positive
+  // problem: when concurrent buys drop the balance, EACH of their
+  // balance-polls sees the drop and reports success — but only one
+  // tx actually landed. The user gets 4 "successful" buy receipts in
+  // the chat with only 2 real txs on chain. Don't do that.
+  //
+  // eth_getTransactionReceipt is the source of truth. If it returns
+  // non-null with status 0x1, this specific hash is in a block.
+  // Implemented as a manual JSON-RPC poll (viem's waitForTransactionReceipt
+  // has its own timeout idiosyncrasies on 0G testnet).
   const deadline = Date.now() + 90_000;
-  let landed = false;
+  let receipt: { status?: Hex; blockNumber?: Hex } | null = null;
   while (Date.now() < deadline) {
-    const cur = (await publicClient.readContract({
-      address: mUSDCAddress,
-      abi: erc20Abi,
-      functionName: 'balanceOf',
-      args: [buyer.address],
-    })) as bigint;
-    if (cur <= balance - price) {
-      landed = true;
-      break;
-    }
+    receipt = (await publicClient.getTransactionReceipt({ hash: txHash }).catch(
+      () => null
+    )) as any;
+    if (receipt?.blockNumber) break;
     await new Promise((r) => setTimeout(r, 2_000));
   }
-  if (!landed) {
+  if (!receipt?.blockNumber) {
     return {
       ok: false,
-      reason: `mUSDC-tx-not-confirmed-in-90s: tx ${txHash} submitted but buyer balance didn't drop. Re-check on chainscan.`,
+      reason:
+        `mUSDC-tx-not-mined-in-90s: tx ${txHash} submitted but never appeared on chain. ` +
+        `Possible nonce collision with a concurrent purchase or RPC dropped from mempool. Re-try.`,
     };
   }
-  console.log(`[purchase] tx confirmed via balance poll: ${txHash}`);
+  // Receipt has status (viem maps to 'success' | 'reverted'); reverted
+  // means the transfer didn't move funds.
+  const status =
+    (receipt as { status?: 'success' | 'reverted' | Hex }).status;
+  if (status !== 'success' && status !== '0x1') {
+    return {
+      ok: false,
+      reason: `mUSDC-tx-reverted: tx ${txHash} mined in block ${receipt.blockNumber} but reverted (status=${status}).`,
+    };
+  }
+  console.log(
+    `[purchase] tx confirmed in block ${receipt.blockNumber}: ${txHash}`
+  );
 
   // Execute the skill
   const result =
