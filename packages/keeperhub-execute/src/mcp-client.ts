@@ -199,8 +199,26 @@ export class KeeperHubClient {
       this.log(`ai_generate_workflow skipped: ${(err as Error).message.slice(0, 120)}`);
     }
 
-    // Step 2: try execute_contract_call. On 0G writes this currently 524s
-    // — we cap at 30s so we don't hang the user-facing flow.
+    // Step 2: try execute_contract_call — UNLESS we've blocklisted this
+    // chain. On 0G (16602/16661) we observed the KH dashboard accumulating
+    // "Running" Direct Contract-Call records that never transition to
+    // terminal state (verified via Analytics page; runs sit Running for 50+
+    // min and never broadcast). Calling it pollutes the user's KH analytics
+    // and gives us nothing back. We skip it entirely on those chains and
+    // rely on the ai_generate_workflow evidence + viem broadcast instead.
+    if (DIRECT_EXEC_BLOCKLIST.has(networkId)) {
+      this.log(
+        `direct execute_contract_call skipped on chain ${networkId} (KH known-issue: writes hang in Running)`
+      );
+      const fallback = await this.viemFallback(intent, 'kh-direct-exec-blocked-on-chain');
+      return {
+        ...fallback,
+        workflowRunId: aiWorkflowId
+          ? `kh-aiwf-${aiWorkflowId}-viem`
+          : fallback.workflowRunId,
+      };
+    }
+
     let executionId: string | undefined;
     try {
       const resp = (await this.callTool(
@@ -449,6 +467,14 @@ function buildWorkflowPrompt(
     `with exponential backoff. Set priority fee to 2 gwei (0G testnet floor).`,
   ].join(' ');
 }
+
+/**
+ * Chains where we've observed `execute_contract_call` writes silently hang
+ * (KH dashboard shows runs stuck in "Running" indefinitely; tx never lands).
+ * On these chains we go straight to viem after generating the workflow
+ * shell. Tracked in FEEDBACK.md.
+ */
+const DIRECT_EXEC_BLOCKLIST = new Set<number>([16602, 16661]);
 
 /** Map our ZGChain enum to its EVM chain ID for KH's `network` field. */
 function chainIdFor(chain: string): number {

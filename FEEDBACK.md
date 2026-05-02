@@ -22,8 +22,36 @@ Honest, actionable feedback from a builder who shipped Clawforger end-to-end dur
 
 ### Reproducible bugs 🔴
 
-1. **`execute_contract_call` 524s on 0G *writes* (reads work fine).**
-   Severity: **blocker for our primary execution path.**
+1. **`execute_contract_call` writes never broadcast on 0G — runs sit "Running" indefinitely.**
+   Severity: **blocker.** This is worse than a clean failure because it
+   pollutes the operator's analytics dashboard with stuck records.
+
+   **Symptom from the user side:** the MCP client receives `MCP error
+   -32001: Request timed out` after our 30s outer timeout (or Cloudflare
+   524 after 120s if we wait that long).
+
+   **Symptom on the KH side (from the operator's Analytics page at
+   `app.keeperhub.com`):** Direct Contract-Call runs accumulate in
+   "Running" status forever. We left three runs untouched for ~1 hour and
+   they remained Running:
+
+   ```
+   Workflow Runs                Status     Source   Network    Time
+   ─────────────────────────────────────────────────────────────────
+   Contract-Call                Running    Direct   16602      50m ago
+     No step logs available
+   Contract-Call                Running    Direct   16602      53m ago
+     No step logs available
+   Contract-Call                Running    Direct   16602      57m ago
+     No step logs available
+   ```
+
+   No tx ever lands on 0G (verified via chainscan-galileo.0g.ai for the
+   KH-managed wallet `0x24Ca59…7d4f`, which had 0.2 0G — gas was not the
+   issue). Whatever queue these runs are in either never picks them up or
+   silently drops the broadcast without writing back a `failed` status.
+
+   **Repro:**
 
    ```ts
    // Read returns in <1s ✓
@@ -34,7 +62,7 @@ Honest, actionable feedback from a builder who shipped Clawforger end-to-end dur
      function_args: '["0xD0c5cCB47FDf06DA8Bd01A0Cf087C4A34c27b685"]',
    }}); // ← 784 ms
 
-   // Write 524s after 120s ✗
+   // Write hangs forever (or 524s after 120s) ✗
    await c.callTool({ name: 'execute_contract_call', arguments: {
      contract_address: '0xfe9163ee0a168e30c10c458c3fadf9f8566647fc', // ClawforgerINFT
      network: '16602',
@@ -43,25 +71,24 @@ Honest, actionable feedback from a builder who shipped Clawforger end-to-end dur
      abi: '...',
      priority_fee_gwei: '2',
    }}, undefined, { timeout: 150_000 });
-   // → Streamable HTTP error: 524 Cloudflare timeout, origin > 120s
+   // → MCP error -32001 (or Cloudflare 524 after 120s)
+   // → KH dashboard: run sits in "Running" forever, never broadcasts
    ```
 
-   The KH origin appears to wait synchronously for full receipt before
-   responding, blowing past Cloudflare's 120s proxy-read window on chains
-   with finality > ~30s. KH-managed wallet was funded (0.2 0G — verified
-   via 0G explorer), so this is not gas-related.
+   **Suggested fixes (not mutually exclusive):**
+   - Return `execution_id` *immediately* after submission so clients can
+     poll asynchronously without holding the HTTP connection.
+   - Add a worker-level circuit breaker that flips runs to `failed` after
+     N seconds of no chain activity, with `error: "tx-never-broadcast"`.
+   - Audit the chain-16602 broadcaster path in your queue system —
+     something in the 0G-Galileo lane is dropping work without alerting.
 
-   **Suggested fix:** make `execute_contract_call` return `execution_id`
-   *immediately* after submitting to the wallet integration's mempool,
-   then let clients poll `get_direct_execution_status` for the receipt.
-   The async shape already exists for workflows — mirroring it here would
-   unblock all chains with finality > 30s.
-
-   **Workaround we shipped:** layered flow that always calls
-   `ai_generate_workflow` first (visible MCP integration evidence,
-   completes in ~3s), tries `execute_contract_call` with a 30s outer
-   timeout, then falls through to viem with KH-shaped retry semantics
-   for the actual broadcast. See `submitAndRun` in our MCP client.
+   **Workaround we shipped:** chain-aware blocklist
+   (`DIRECT_EXEC_BLOCKLIST = {16602, 16661}`). On 0G chains we skip
+   `execute_contract_call` entirely after `ai_generate_workflow` runs.
+   Other chains keep using the direct path. See `submitAndRun` in
+   `packages/keeperhub-execute/src/mcp-client.ts`. We'll lift the
+   blocklist as soon as KH confirms 0G writes broadcast reliably.
 
 2. **Default MCP request timeout (30s SDK default) is too short for write tools.**
    The TS SDK's `DEFAULT_REQUEST_TIMEOUT_MSEC` is 30s. KH's write-class
