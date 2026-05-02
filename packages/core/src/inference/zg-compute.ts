@@ -153,11 +153,17 @@ function deriveProviderInfo(s: any): {
 export interface ZGComputeOpts {
   /** Hex private key (0x-prefixed, 64 hex). Used to authenticate broker calls. */
   privateKey: string;
-  /** RPC URL for 0G Galileo testnet (default below). */
+  /**
+   * RPC URL for the 0G chain hosting the compute broker. Default points
+   * at Aristotle mainnet (chainId 16661) — production-grade models live
+   * there (DeepSeek v3, GLM-5, gpt-5.4-mini). Override with the testnet
+   * RPC to use the testnet broker.
+   */
   rpcUrl?: string;
   /**
    * Substring of preferred model name. Picks the first provider whose
-   * model contains this. Default 'qwen' which usually maps to qwen2.5/3.6.
+   * model contains this. Default 'deepseek' — strong tool-calling, low
+   * cost on Aristotle mainnet. Try 'glm', 'gpt-oss', 'qwen' for others.
    */
   modelHint?: string;
   /**
@@ -243,7 +249,7 @@ export class ZGComputeInference implements Inference {
 
   constructor(private opts: ZGComputeOpts) {
     const provider = new ethers.JsonRpcProvider(
-      opts.rpcUrl ?? 'https://evmrpc-testnet.0g.ai'
+      opts.rpcUrl ?? 'https://evmrpc.0g.ai'
     );
     this.wallet = new ethers.Wallet(opts.privateKey, provider);
   }
@@ -384,7 +390,7 @@ export class ZGComputeInference implements Inference {
   private async pickProvider(): Promise<ProviderInfo> {
     await this.ensureBroker();
     if (this.services.length === 0) throw new Error('no-providers-available');
-    const hint = (this.opts.modelHint ?? 'qwen').toLowerCase();
+    const hint = (this.opts.modelHint ?? 'deepseek').toLowerCase();
     const match = this.services.find((s) =>
       (s.model ?? '').toLowerCase().includes(hint)
     );
@@ -639,7 +645,11 @@ export class ZGComputeInference implements Inference {
   }
 
   private codeGenPrompt(opts: CodeGenOpts): string {
+    const personaBlock = opts.personaContext
+      ? `\n${opts.personaContext}\n`
+      : '';
     return `You are a skill generator for a Clawforger agent.
+${personaBlock}
 
 Output STRICT JSON matching this shape:
 {
@@ -659,10 +669,14 @@ CRITICAL CODE RULES — your "code" string runs in a sandbox via new Function():
 - Network access may fail (sandbox isolation, DNS, CORS). Wrap any fetch() in try/catch and ALWAYS return a value that matches schemaOut, using deterministic synthesized data on failure
 - The output MUST satisfy schemaOut whether or not the network call succeeds — never throw, never return undefined
 
-Example of valid code (notice: no regex, no markdown, no comments — just the function):
-"async function run(input) { return { abstract: 'Result for ' + JSON.stringify(input) + ': self-evolving agents on 0G via ERC-7857 and KeeperHub.' }; }"
+ABSOLUTELY FORBIDDEN — these break new Function() parsing:
+- NO regex literals (no /pattern/ syntax) — use indexOf / split / substring instead
+- NO template literals with backticks (no \`hello \${x}\`) — use string concatenation with +
+- NO backslash escapes in string literals beyond \\n and \\t
+- NO multi-line strings — keep all strings on one line
 
-Avoid regex literals that contain backslashes — they often break when the JSON is parsed. Avoid template literals with newlines. Keep the function on a single logical line. If you need to compose strings, use plain string concatenation with '+'.
+Example of valid code — note: indexOf instead of regex, plain '+' instead of template:
+"async function run(input) { try { const id = String(input.paperId || ''); const r = await fetch('https://export.arxiv.org/api/query?id_list=' + id); const t = await r.text(); const start = t.indexOf('<summary>'); const end = t.indexOf('</summary>', start); const abstract = (start > -1 && end > -1) ? t.substring(start + 9, end).trim() : 'Abstract for paper ' + id + ' (offline fallback).'; return { abstract: abstract }; } catch (e) { return { abstract: 'Abstract for ' + JSON.stringify(input) + ' (network error fallback).' }; } }"
 
 Task description: ${opts.task.description}
 Task inputs example: ${JSON.stringify(opts.task.inputs)}

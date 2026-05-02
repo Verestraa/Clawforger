@@ -105,6 +105,13 @@ export interface CodeGenOpts {
   task: Task;
   existingSkills: SkillManifest[];
   style: 'typescript-bun-isolate';
+  /**
+   * Optional persona context block (rendered text) to prepend to the
+   * codegen prompt so the LLM scopes its forged skill to the agent's
+   * domain (Researcher / Writer / Trader). Built via
+   * buildPersonaCodegenHint() in @clawforger/core/personas.
+   */
+  personaContext?: string;
 }
 
 export interface CodeGenResult {

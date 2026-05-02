@@ -13,6 +13,8 @@
  * Default port: 3700 (configurable via PORT env)
  */
 
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
@@ -33,7 +35,9 @@ import {
   FileBackedZGStorage,
   ZGMemory,
   deriveKeyFromSignature,
+  decrypt,
 } from '@clawforger/memory-0g';
+import { detectPersona, buildPersonaCodegenHint } from '@clawforger/core';
 
 const port = Number(process.env.PORT ?? 3700);
 const facilitatorUrl = process.env.X402_FACILITATOR_URL ?? 'http://localhost:3701';
@@ -136,12 +140,20 @@ const fallbackSigner = fallbackPk
 
 // Live agent inference. Bridge endpoint /admin/chat uses this so the
 // 0G Compute key stays out of the browser bundle.
+// Inference RPC is decoupled from contract RPC: contracts run on 0G
+// Galileo testnet (no real USD stablecoin on Aristotle yet — deploying
+// contracts to mainnet gains nothing over testnet), but compute targets
+// Aristotle mainnet for production-grade models (DeepSeek v3 / GLM-5 /
+// gpt-5.4-mini) instead of testnet qwen-2.5-7b which hallucinates.
 const inference =
   fallbackPk
     ? new ZGComputeInference({
         privateKey: fallbackPk,
-        rpcUrl: process.env.ZG_GALILEO_RPC,
-        modelHint: process.env.ZG_COMPUTE_MODEL ?? 'qwen',
+        rpcUrl:
+          process.env.ZG_COMPUTE_RPC ??
+          process.env.ZG_GALILEO_RPC ??
+          'https://evmrpc.0g.ai',
+        modelHint: process.env.ZG_COMPUTE_MODEL ?? 'deepseek',
         fallbackToMock: true,
         debug: true,
       })
@@ -151,7 +163,14 @@ const inference =
 // /admin/chat turn is appended to the agent's iNFT-namespaced log on
 // 0G Storage (file-backed locally; swap to RealZGStorageClient when
 // @0gfoundation/0g-ts-sdk is wired). Survives refresh + server restart.
-const MEMORY_FILE = process.env.MEMORY_FILE ?? './data/agent-memory.json';
+// Anchor to project root regardless of cwd — bun is often launched from
+// the package dir (`bun --filter @clawforger/x402-skill-market`) which
+// would resolve relative paths to packages/x402-skill-market/data/ and
+// silently miss skills the researcher example wrote at the repo root.
+const MEMORY_FILE =
+  process.env.MEMORY_FILE ??
+  resolve(fileURLToPath(new URL('../../../data/agent-memory.json', import.meta.url)));
+console.log(`[skill-market] memory store: ${MEMORY_FILE}`);
 const storage = new FileBackedZGStorage(MEMORY_FILE);
 const encryptionKeyPromise = fallbackPk
   ? deriveKeyFromSignature(fallbackPk)
@@ -205,6 +224,18 @@ app.get('/admin/compute-balance', async (c) => {
   }
   try {
     const info = await inference.getLedgerInfo();
+    // Identify which chain + model the broker is actively using so the
+    // studio's badge can prove "we're really on mainnet, not stale cache."
+    const computeRpc =
+      process.env.ZG_COMPUTE_RPC ??
+      process.env.ZG_GALILEO_RPC ??
+      'https://evmrpc.0g.ai';
+    const isMainnet =
+      computeRpc.includes('evmrpc.0g.ai') &&
+      !computeRpc.includes('testnet');
+    const activeProvider = await (inference as any)
+      .getActiveProvider?.()
+      .catch(() => null);
     return c.json({
       ok: true,
       walletAddress: info.walletAddress,
@@ -213,6 +244,11 @@ app.get('/admin/compute-balance', async (c) => {
       availableOG: info.availableOG,
       minDepositOG: info.minDepositOG,
       minBalanceOG: info.minBalanceOG,
+      computeChain: isMainnet
+        ? { name: '0G Aristotle', chainId: 16661, kind: 'mainnet' }
+        : { name: '0G Galileo', chainId: 16602, kind: 'testnet' },
+      activeModel: activeProvider?.model ?? null,
+      activeProviderAddress: activeProvider?.providerAddress ?? null,
       note:
         'Pool funds inference for ALL agents — users never pay for chat directly. ' +
         'When availableOG falls below minBalanceOG the server tops up by minDepositOG.',
@@ -328,7 +364,8 @@ const EVOLVE_TOOL_DEF = {
 async function forgeSkillForAgent(
   agentTokenId: bigint,
   args: { capabilityTag: string; taskDescription: string; exampleInput: Record<string, unknown> },
-  memory: ZGMemory
+  memory: ZGMemory,
+  personaContext?: string
 ): Promise<{
   ok: boolean;
   capabilityTag?: string;
@@ -394,6 +431,7 @@ async function forgeSkillForAgent(
     storage,
     encryptionKey,
     forceTag: args.capabilityTag,
+    personaContext,
     onAttempt: (n, _code, sandboxResult) => {
       attempts = n;
       memory
@@ -724,6 +762,19 @@ app.post('/admin/chat', async (c) => {
           }
 
           const mem = await getMemoryFor(agentTokenId);
+          // Detect persona from the agent's system prompt — Researcher /
+          // Writer / Trader. Threads its preferred no-auth APIs + scope
+          // restrictions into the codegen prompt so a Trader can't forge
+          // an arxiv-fetcher and a Writer doesn't pick a paid API.
+          const persona = detectPersona(parsed.data.systemPrompt ?? null);
+          const personaContext = persona
+            ? buildPersonaCodegenHint(persona)
+            : undefined;
+          if (persona) {
+            console.log(
+              `[skill-forge] persona=${persona.name} → APIs: ${persona.preferredApis.map((a) => a.name).join(', ')}`
+            );
+          }
           const forgeResult = await forgeSkillForAgent(
             agentTokenId,
             {
@@ -731,7 +782,8 @@ app.post('/admin/chat', async (c) => {
               taskDescription: a.taskDescription,
               exampleInput: a.exampleInput ?? {},
             },
-            mem!
+            mem!,
+            personaContext
           );
 
           // Refresh tools so the LLM sees the new skill on the next iteration
@@ -774,10 +826,14 @@ app.post('/admin/chat', async (c) => {
           continue;
         }
 
-        const output = stubSkillOutput(
-          skill.capabilityTag,
-          (parsedArgs as Record<string, unknown>) ?? {}
-        );
+        const inputs = (parsedArgs as Record<string, unknown>) ?? {};
+        // Try the real artifact first — fetch from 0G Storage, decrypt,
+        // run via new Function(). Falls through to a templated stub if
+        // anything goes wrong (network, parse, timeout). This is the
+        // self-evolution loop closing on itself: forge → publish →
+        // execute the freshly-published artifact in the same chat turn.
+        const real = await runForgedSkill(skill.hash, inputs);
+        const output = real ?? stubSkillOutput(skill.capabilityTag, inputs);
         invocations.push({
           name: call.function.name,
           capabilityTag: skill.capabilityTag,
@@ -1159,6 +1215,63 @@ app.post('/skill/:hash', async (c) => {
     settlement.txHash ? { 'X-Settle-Tx': settlement.txHash } : {}
   );
 });
+
+/**
+ * Real skill execution: fetch the encrypted artifact from 0G Storage, decrypt
+ * with the server's key (same as forge), and execute the JS code in a Bun
+ * sandbox via new Function() with a timeout. Returns null on any failure so
+ * callers can fall back to stubSkillOutput.
+ *
+ * The artifact blob shape (set by skill-forge) is:
+ *   { code, schemaIn, schemaOut, capabilityTag, reasoning }
+ *
+ * Network access during execution is allowed (the generated code does fetch()).
+ * This mirrors what skill-forge's sandbox-test phase verified before publish.
+ */
+const SKILL_EXEC_TIMEOUT_MS = 15_000;
+const skillCodeCache = new Map<string, string>();
+
+async function runForgedSkill(
+  skillHash: Hex,
+  inputs: Record<string, unknown>
+): Promise<Record<string, unknown> | null> {
+  if (!encryptionKeyPromise) return null;
+  try {
+    let code = skillCodeCache.get(skillHash);
+    if (!code) {
+      const blob = await storage.fetchBlob(skillHash);
+      const key = await encryptionKeyPromise;
+      const artifact = (await decrypt(key, blob)) as
+        | { code?: string }
+        | null;
+      if (!artifact || typeof artifact.code !== 'string') return null;
+      code = artifact.code;
+      skillCodeCache.set(skillHash, code);
+    }
+
+    const fn = new Function(`${code}\nreturn run;`)() as (
+      i: Record<string, unknown>
+    ) => Promise<unknown>;
+    if (typeof fn !== 'function') return null;
+
+    const result = await Promise.race([
+      Promise.resolve(fn(inputs)),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error('skill-exec-timeout')),
+          SKILL_EXEC_TIMEOUT_MS
+        )
+      ),
+    ]);
+    if (!result || typeof result !== 'object') return null;
+    return result as Record<string, unknown>;
+  } catch (err) {
+    console.warn(
+      `[skill-exec] ${skillHash.slice(0, 12)}… failed: ${(err as Error).message.slice(0, 120)}`
+    );
+    return null;
+  }
+}
 
 /**
  * Generate a deterministic-looking demo output per capability tag.

@@ -19,6 +19,10 @@
       "types": "./src/chains.ts",
       "import": "./src/chains.ts"
     },
+    "./personas": {
+      "types": "./src/personas.ts",
+      "import": "./src/personas.ts"
+    },
     "./abis/*": "./src/abis/*"
   },
   "scripts": {

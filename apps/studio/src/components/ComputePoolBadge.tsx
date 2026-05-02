@@ -21,6 +21,9 @@ interface ComputeBalance {
   availableOG?: number;
   minDepositOG?: number;
   minBalanceOG?: number;
+  computeChain?: { name: string; chainId: number; kind: 'mainnet' | 'testnet' };
+  activeModel?: string | null;
+  activeProviderAddress?: string | null;
   note?: string;
   reason?: string;
   info?: string;
@@ -159,12 +162,42 @@ function Banner({ data, loading }: { data: ComputeBalance | null; loading: boole
           <span>total deposited: {total.toFixed(3)} 0G</span>
         </div>
       </div>
+      {(data.activeModel || data.computeChain) && (
+        <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 border-t border-zinc-800 pt-2">
+          <span>
+            chain:{' '}
+            <span
+              className={
+                data.computeChain?.kind === 'mainnet'
+                  ? 'text-emerald-400'
+                  : 'text-yellow-400'
+              }
+            >
+              {data.computeChain?.name ?? 'unknown'}{' '}
+              {data.computeChain?.chainId
+                ? `(${data.computeChain.chainId})`
+                : ''}
+            </span>
+          </span>
+          <span className="truncate max-w-[220px]">
+            model: <span className="text-zinc-300">{data.activeModel ?? '—'}</span>
+          </span>
+        </div>
+      )}
       <p className="text-[11px] text-zinc-400 leading-relaxed">
-        Chat with iNFTs runs through TEE-verified <strong>qwen-2.5-7b</strong> on 0G Compute. The
-        server-side wallet pre-funds inference for every agent — <strong>users never pay per
-        message</strong>. Auto-tops up by {data.minDepositOG} 0G when this falls below{' '}
-        {data.minBalanceOG} 0G. A new operator wallet needs ≥ {data.minDepositOG} 0G to create the
-        broker account in the first place.
+        Chat with iNFTs runs through TEE-verified inference on 0G Compute. The server-side wallet
+        pre-funds inference for every agent — <strong>users never pay per message</strong>.
+        Auto-tops up by {data.minDepositOG} 0G when available falls below {data.minBalanceOG} 0G. A
+        new operator wallet needs ≥ {data.minDepositOG} 0G to create the broker account.
+        {data.computeChain?.kind === 'testnet' && (
+          <>
+            {' '}
+            <span className="text-yellow-400">
+              ⚠ currently on testnet — set <code>ZG_COMPUTE_RPC=https://evmrpc.0g.ai</code> in the
+              server env for mainnet (DeepSeek V3 / GLM-5 / GPT-5.4-mini) instead of testnet qwen.
+            </span>
+          </>
+        )}
       </p>
     </div>
   );

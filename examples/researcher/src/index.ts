@@ -133,10 +133,16 @@ async function main() {
   // Real TEE-verified inference via 0G Compute Network. Falls back to
   // MockInference if the broker is unreachable or no providers are
   // available — keeps the demo runnable on a fresh laptop.
+  // Inference targets Aristotle mainnet (better models); contracts stay
+  // on Galileo testnet because Aristotle has no canonical USD stablecoin
+  // yet, so a mainnet contract deploy gains nothing over the testnet one.
   const inference = new ZGComputeInference({
     privateKey: pk,
-    rpcUrl: process.env.ZG_GALILEO_RPC,
-    modelHint: process.env.ZG_COMPUTE_MODEL ?? 'qwen',
+    rpcUrl:
+      process.env.ZG_COMPUTE_RPC ??
+      process.env.ZG_GALILEO_RPC ??
+      'https://evmrpc.0g.ai',
+    modelHint: process.env.ZG_COMPUTE_MODEL ?? 'deepseek',
     fallbackToMock: true,
     debug: true,
   });

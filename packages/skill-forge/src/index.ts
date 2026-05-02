@@ -33,6 +33,13 @@ export interface EvolveOpts {
    * doesn't want MockInference's fallback heuristic to override it.
    */
   forceTag?: string;
+  /**
+   * Optional persona context block (rendered text) — see
+   * @clawforger/core/personas.buildPersonaCodegenHint. Forwarded into the
+   * inference's generateCode call so a Researcher's forge stays in
+   * research APIs, etc.
+   */
+  personaContext?: string;
 }
 
 export interface EvolveResult {
@@ -55,6 +62,7 @@ export async function evolve(opts: EvolveOpts): Promise<EvolveResult> {
       task: opts.task,
       existingSkills: opts.agent.skills,
       style: 'typescript-bun-isolate',
+      personaContext: opts.personaContext,
     });
 
     // 2. Sandbox-test

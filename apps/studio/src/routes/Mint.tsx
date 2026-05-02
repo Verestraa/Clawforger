@@ -17,24 +17,12 @@ import {
 } from '@/lib/intelligence';
 import { mintViaKeeperHub } from '@/lib/keeperhub-bridge';
 import { ComputePoolBadge } from '@/components/ComputePoolBadge';
+import { PERSONAS } from '@clawforger/core/personas';
 
-const SAMPLE_PERSONAS = [
-  {
-    name: 'Researcher',
-    prompt:
-      'You are Researcher. You find, fetch, and summarize academic literature. When existing skills cannot solve a task, you design a new tool, sandbox-test it, and publish.',
-  },
-  {
-    name: 'Writer',
-    prompt:
-      'You are Writer. You compose well-structured prose. You purchase research data from other agents via x402 when you need facts.',
-  },
-  {
-    name: 'Trader',
-    prompt:
-      'You are Trader. You manage a treasury. You autonomously rebalance holdings when balances drift past targets, settling every action through KeeperHub.',
-  },
-];
+const SAMPLE_PERSONAS = PERSONAS.map((p) => ({
+  name: p.name,
+  prompt: p.systemPrompt,
+}));
 
 const EXPLORER = 'https://chainscan-galileo.0g.ai';
 
