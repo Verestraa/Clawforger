@@ -31,6 +31,7 @@ import { ABIS, ADDRESSES } from '@/lib/contracts';
 import { loadPayload } from '@/lib/intelligence';
 import { ComputePoolBadge } from '@/components/ComputePoolBadge';
 import { AgentAvatar, PERSONA_TONE } from '@/components/AgentAvatar';
+import { AgentWalletBadge } from '@/components/AgentWalletBadge';
 
 const MARKET_URL =
   (import.meta.env.VITE_X402_MARKET_URL as string | undefined) ?? 'http://localhost:3700';
@@ -224,6 +225,9 @@ export default function AgentChat() {
               </span>
             )}
             <ComputePoolBadge variant="inline" />
+            {tokenId !== undefined && (
+              <AgentWalletBadge tokenId={String(tokenId)} />
+            )}
             <span
               className="inline-flex items-center gap-1.5 text-[10px] text-emerald-400/80 font-mono"
               title="Conversation is encrypted with a key derived from the iNFT owner and persisted to the agent's memory log on 0G Storage. Survives refresh + server restart."
@@ -340,11 +344,130 @@ function Turn({ turn, agentName }: { turn: ChatTurn; agentName: string }) {
               ))}
             </div>
           )}
-          <div className="text-sm text-zinc-200 whitespace-pre-wrap">{turn.content}</div>
+          <div className="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed">
+            <RichText text={turn.content} />
+          </div>
         </>
       )}
     </div>
   );
+}
+
+/**
+ * Tiny inline-markdown renderer. Handles only what agent replies actually
+ * use: [text](url), **bold**, `code`, and bare URLs / 0x-tx-hashes.
+ * Auto-links 0x… hex strings to chainscan-galileo since the consumer
+ * directive emits raw txHashes in receipts.
+ */
+function RichText({ text }: { text: string }) {
+  if (!text) return null;
+  // Split on known markdown patterns; emit React nodes inline.
+  // Pattern order matters — link first so its [text] doesn't get mangled.
+  const parts: Array<string | React.ReactNode> = [];
+  let i = 0;
+  let buf = '';
+  const flush = () => {
+    if (buf) {
+      parts.push(buf);
+      buf = '';
+    }
+  };
+  const linkRe = /\[([^\]]+)\]\(([^)]+)\)/y;
+  const boldRe = /\*\*([^*]+)\*\*/y;
+  const codeRe = /`([^`]+)`/y;
+  // Bare 0x… hex (40+ chars) → auto-link to chainscan tx page
+  const txRe = /(0x[a-fA-F0-9]{64})/y;
+  // Bare https URL
+  const urlRe = /(https?:\/\/[^\s)]+)/y;
+  while (i < text.length) {
+    linkRe.lastIndex = i;
+    boldRe.lastIndex = i;
+    codeRe.lastIndex = i;
+    txRe.lastIndex = i;
+    urlRe.lastIndex = i;
+    const link = linkRe.exec(text);
+    if (link && link.index === i) {
+      flush();
+      parts.push(
+        <a
+          key={i}
+          href={link[2]}
+          target="_blank"
+          rel="noopener"
+          className="text-accent underline hover:text-accent/80"
+        >
+          {link[1]}
+        </a>
+      );
+      i += link[0].length;
+      continue;
+    }
+    const bold = boldRe.exec(text);
+    if (bold && bold.index === i) {
+      flush();
+      parts.push(
+        <strong key={i} className="text-zinc-100 font-semibold">
+          {bold[1]}
+        </strong>
+      );
+      i += bold[0].length;
+      continue;
+    }
+    const code = codeRe.exec(text);
+    if (code && code.index === i) {
+      flush();
+      parts.push(
+        <code
+          key={i}
+          className="text-[12px] bg-zinc-900/50 px-1 py-0.5 rounded font-mono text-zinc-300"
+        >
+          {code[1]}
+        </code>
+      );
+      i += code[0].length;
+      continue;
+    }
+    const tx = txRe.exec(text);
+    if (tx && tx.index === i) {
+      flush();
+      const hash = tx[1]!;
+      parts.push(
+        <a
+          key={i}
+          href={`https://chainscan-galileo.0g.ai/tx/${hash}`}
+          target="_blank"
+          rel="noopener"
+          className="text-accent underline hover:text-accent/80 font-mono"
+          title={hash}
+        >
+          {hash.slice(0, 10)}…{hash.slice(-6)}
+        </a>
+      );
+      i += tx[0].length;
+      continue;
+    }
+    const url = urlRe.exec(text);
+    if (url && url.index === i) {
+      flush();
+      parts.push(
+        <a
+          key={i}
+          href={url[1]}
+          target="_blank"
+          rel="noopener"
+          className="text-accent underline hover:text-accent/80 break-all"
+        >
+          {url[1]}
+        </a>
+      );
+      i += url[0].length;
+      continue;
+    }
+    buf += text[i];
+    i++;
+  }
+  flush();
+  return <>{parts}</>;
 }
 
 function ToolCard({ invocation }: { invocation: SkillInvocation }) {
