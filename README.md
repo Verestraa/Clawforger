@@ -118,6 +118,10 @@ Clawforger/
 - **KeeperHub Builder Feedback Bounty ($500)** — see [FEEDBACK.md](FEEDBACK.md). Reproducible 0G broadcaster bug with operator-side dashboard evidence + repro code + suggested fixes.
 - **0G Best Agent Framework / iNFT** — ERC-7857 with dynamic metadata + per-agent deterministic sub-wallets + royalty splits + persona-scoped self-evolution.
 
+## Author
+
+Built by [@verestraa](https://x.com/verestraa) for EthGlobal Open Agents 2026.
+
 ## License
 
 MIT

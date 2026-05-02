@@ -60,8 +60,23 @@ export default function App() {
             x402
           </a>
         </div>
-        <div>
-          <a className="hover:text-accent" href="https://github.com/ClawForger/clawforger" target="_blank" rel="noopener">
+        <div className="flex items-center gap-3">
+          <a
+            className="hover:text-accent"
+            href="https://x.com/verestraa"
+            target="_blank"
+            rel="noopener"
+            title="follow on X"
+          >
+            @verestraa
+          </a>
+          <span className="text-zinc-700">·</span>
+          <a
+            className="hover:text-accent"
+            href="https://github.com/ClawForger/Clawforger"
+            target="_blank"
+            rel="noopener"
+          >
             github
           </a>
         </div>
