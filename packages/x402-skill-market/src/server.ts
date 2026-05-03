@@ -83,15 +83,25 @@ async function syncFromChain(): Promise<void> {
       fromBlock: 'earliest',
       toBlock: 'latest',
     });
+    let skipped = 0;
     for (const log of logs) {
       const artifactHash = log.args.artifactHash as Hex;
       if (index.get(artifactHash)) continue; // already known
 
-      // The chain event only carries hash + tag + price + owner. The
-      // JSON schemas live INSIDE the encrypted artifact blob on storage.
-      // Try to decrypt + extract schemas so the marketplace listing tells
-      // the LLM the right input keys (the alternative is empty schemas
-      // → "inputs: {}" → buyers guess key names + skill returns 0).
+      const tag = log.args.capabilityTag as string;
+      const ownerTokenId = log.args.ownerTokenId as bigint;
+
+      // FRESHNESS FILTER — only publish skills whose encrypted artifact
+      // is decryptable on THIS server. Old skills from a prior server
+      // instance (different AGENT_WALLET_SEED → different encryption
+      // key, or whose blob never made it onto this disk) end up cluttering
+      // the marketplace listing and lead the LLM into buying skills that
+      // can only ever return placeholder. Filter them out at sync time.
+      if (!encryptionKeyPromise) {
+        // No key configured — can't validate; skip publishing entirely.
+        skipped++;
+        continue;
+      }
       let schemaIn: Record<string, unknown> = {
         type: 'object',
         properties: {},
@@ -102,32 +112,41 @@ async function syncFromChain(): Promise<void> {
         properties: {},
         additionalProperties: true,
       };
-      if (encryptionKeyPromise) {
-        try {
-          const blob = await storage.fetchBlob(artifactHash);
-          const key = await encryptionKeyPromise;
-          const artifact = (await decrypt(key, blob)) as
-            | { schemaIn?: Record<string, unknown>; schemaOut?: Record<string, unknown> }
-            | null;
-          if (artifact?.schemaIn) schemaIn = artifact.schemaIn;
-          if (artifact?.schemaOut) schemaOut = artifact.schemaOut;
-        } catch {
-          // Blob not in local storage or decryption mismatch — fall through
-          // to empty schemas. Skills published on a different machine /
-          // server seed will hit this; the buy still works, just without
-          // input-key hints.
+      try {
+        const blob = await storage.fetchBlob(artifactHash);
+        const key = await encryptionKeyPromise;
+        const artifact = (await decrypt(key, blob)) as
+          | {
+              code?: string;
+              schemaIn?: Record<string, unknown>;
+              schemaOut?: Record<string, unknown>;
+            }
+          | null;
+        if (!artifact || typeof artifact.code !== 'string') {
+          throw new Error('decrypted artifact missing code');
         }
+        if (artifact.schemaIn) schemaIn = artifact.schemaIn;
+        if (artifact.schemaOut) schemaOut = artifact.schemaOut;
+      } catch (err) {
+        skipped++;
+        // Don't spam logs — first-time sync of a 30-skill registry is
+        // expected to filter many. Log at debug level instead.
+        const reason = (err as Error).message.slice(0, 80);
+        console.log(
+          `[skill-market] skip stale ${tag} #${ownerTokenId} (${artifactHash.slice(0, 10)}…): ${reason}`
+        );
+        continue;
       }
 
       const skill: SkillManifest = {
         hash: artifactHash,
-        capabilityTag: log.args.capabilityTag as string,
+        capabilityTag: tag,
         schemaIn,
         schemaOut,
         priceUSDC: Number(log.args.priceUSDC as bigint),
         ownerINFT: {
           contractAddress: CLAWFORGER_INFT as Address,
-          tokenId: log.args.ownerTokenId as bigint,
+          tokenId: ownerTokenId,
           chain: '0g-galileo-testnet',
         },
       };
@@ -136,6 +155,11 @@ async function syncFromChain(): Promise<void> {
       const propCount = Object.keys(props).length;
       console.log(
         `[skill-market] synced ${skill.capabilityTag} (${artifactHash.slice(0, 10)}…) from chain — schema: ${propCount} props`
+      );
+    }
+    if (skipped > 0) {
+      console.log(
+        `[skill-market] sync done — published ${index.all().length}, skipped ${skipped} stale (artifacts not decryptable on this server)`
       );
     }
   } catch (err) {
@@ -1250,8 +1274,15 @@ app.post('/admin/chat', async (c) => {
         // anything goes wrong (network, parse, timeout). This is the
         // self-evolution loop closing on itself: forge → publish →
         // execute the freshly-published artifact in the same chat turn.
-        const real = await runForgedSkill(skill.hash, inputs);
-        const output = real ?? stubSkillOutput(skill.capabilityTag, inputs);
+        const exec = await runForgedSkill(skill.hash, inputs);
+        if (!exec.ok) {
+          console.warn(
+            `[skill-exec] ${skill.hash.slice(0, 12)}… failed: ${exec.reason} — ${exec.detail}`
+          );
+        }
+        const output = exec.ok
+          ? exec.output
+          : stubSkillOutput(skill.capabilityTag, inputs, exec);
         invocations.push({
           name: call.function.name,
           capabilityTag: skill.capabilityTag,
@@ -1280,18 +1311,24 @@ app.post('/admin/chat', async (c) => {
       if (placeholders.length > 0) {
         const lines = placeholders.map((p) => {
           const hashShort = p.skillHash ? `${p.skillHash.slice(0, 12)}…` : '(no hash)';
-          return `- **${p.capabilityTag}** — registered on-chain (artifact ${hashShort}), listed at 0.05 mUSDC. Real execution is pending in this build.`;
+          const out = p.output as Record<string, unknown>;
+          const note =
+            typeof out?.note === 'string'
+              ? out.note
+              : 'Real execution failed.';
+          return `- **${p.capabilityTag}** (${hashShort}) — ${note}`;
         });
         last = {
           ...last,
           content:
             `I called ${placeholders.length === 1 ? 'a skill' : `${placeholders.length} skills`} ` +
-            `for you, but ${placeholders.length === 1 ? 'it returned' : 'they returned'} ` +
-            `a placeholder — the marketplace server doesn't execute freshly-evolved ` +
-            `skill code in this build, so I can't fabricate real results.\n\n` +
+            `for you, but ${placeholders.length === 1 ? 'it didn\'t return' : 'they didn\'t return'} ` +
+            `usable data. I can't fabricate real results, so here's the honest cause:\n\n` +
             lines.join('\n') +
-            `\n\nThe skill artifact is encrypted and stored on 0G Storage; once a worker ` +
-            `is wired to execute it, the same tool call will return real data.`,
+            `\n\nIf the cause is bad inputs, retry with the schema's required ` +
+            `fields. If it's a missing/unkeyable artifact, pick a different ` +
+            `producer — newer skills (higher producerTokenId) are more likely ` +
+            `to be executable on this server.`,
         };
         break;
       }
@@ -1844,9 +1881,15 @@ async function purchaseSkillForAgent(
   );
 
   // Execute the skill
-  const result =
-    (await runForgedSkill(skill.hash, args.inputs)) ??
-    stubSkillOutput(skill.capabilityTag, args.inputs);
+  const exec = await runForgedSkill(skill.hash, args.inputs);
+  if (!exec.ok) {
+    console.warn(
+      `[skill-exec] ${skill.hash.slice(0, 12)}… failed: ${exec.reason} — ${exec.detail}`
+    );
+  }
+  const result = exec.ok
+    ? exec.output
+    : stubSkillOutput(skill.capabilityTag, args.inputs, exec);
 
   return {
     ok: true,
@@ -1860,30 +1903,88 @@ async function purchaseSkillForAgent(
   };
 }
 
+type SkillExecFailureReason =
+  | 'no-encryption-key'
+  | 'blob-not-found'
+  | 'decrypt-failed'
+  | 'compile-failed'
+  | 'fn-not-callable'
+  | 'fn-threw'
+  | 'fn-returned-non-object'
+  | 'timeout';
+
+type SkillExecResult =
+  | { ok: true; output: Record<string, unknown> }
+  | { ok: false; reason: SkillExecFailureReason; detail: string };
+
 async function runForgedSkill(
   skillHash: Hex,
   inputs: Record<string, unknown>
-): Promise<Record<string, unknown> | null> {
-  if (!encryptionKeyPromise) return null;
-  try {
-    let code = skillCodeCache.get(skillHash);
-    if (!code) {
-      const blob = await storage.fetchBlob(skillHash);
-      const key = await encryptionKeyPromise;
-      const artifact = (await decrypt(key, blob)) as
-        | { code?: string }
-        | null;
-      if (!artifact || typeof artifact.code !== 'string') return null;
-      code = artifact.code;
-      skillCodeCache.set(skillHash, code);
+): Promise<SkillExecResult> {
+  if (!encryptionKeyPromise) {
+    return {
+      ok: false,
+      reason: 'no-encryption-key',
+      detail: 'server has no AGENT_WALLET_SEED / fallback PK to derive the encryption key from',
+    };
+  }
+  let code = skillCodeCache.get(skillHash);
+  if (!code) {
+    let blob: Uint8Array;
+    try {
+      blob = await storage.fetchBlob(skillHash);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'blob-not-found',
+        detail: `artifact ${skillHash.slice(0, 12)}… is not in this server's local storage (likely forged on a different server instance)`,
+      };
     }
+    let artifact: { code?: string } | null;
+    try {
+      const key = await encryptionKeyPromise;
+      artifact = (await decrypt(key, blob)) as { code?: string } | null;
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'decrypt-failed',
+        detail: `artifact ${skillHash.slice(0, 12)}… exists but won't decrypt — likely encrypted with a different AGENT_WALLET_SEED`,
+      };
+    }
+    if (!artifact || typeof artifact.code !== 'string') {
+      return {
+        ok: false,
+        reason: 'decrypt-failed',
+        detail: `artifact ${skillHash.slice(0, 12)}… decrypted but contained no executable code`,
+      };
+    }
+    code = artifact.code;
+    skillCodeCache.set(skillHash, code);
+  }
 
-    const fn = new Function(`${code}\nreturn run;`)() as (
+  let fn: (i: Record<string, unknown>) => Promise<unknown>;
+  try {
+    fn = new Function(`${code}\nreturn run;`)() as (
       i: Record<string, unknown>
     ) => Promise<unknown>;
-    if (typeof fn !== 'function') return null;
+  } catch (err) {
+    return {
+      ok: false,
+      reason: 'compile-failed',
+      detail: `skill code did not compile: ${(err as Error).message.slice(0, 120)}`,
+    };
+  }
+  if (typeof fn !== 'function') {
+    return {
+      ok: false,
+      reason: 'fn-not-callable',
+      detail: `skill artifact compiled but \`run\` is not a function`,
+    };
+  }
 
-    const result = await Promise.race([
+  let result: unknown;
+  try {
+    result = await Promise.race([
       Promise.resolve(fn(inputs)),
       new Promise<never>((_, reject) =>
         setTimeout(
@@ -1892,23 +1993,46 @@ async function runForgedSkill(
         )
       ),
     ]);
-    if (!result || typeof result !== 'object') return null;
-    return result as Record<string, unknown>;
   } catch (err) {
-    console.warn(
-      `[skill-exec] ${skillHash.slice(0, 12)}… failed: ${(err as Error).message.slice(0, 120)}`
-    );
-    return null;
+    const msg = (err as Error).message;
+    if (msg === 'skill-exec-timeout') {
+      return {
+        ok: false,
+        reason: 'timeout',
+        detail: `skill exceeded ${SKILL_EXEC_TIMEOUT_MS}ms timeout`,
+      };
+    }
+    return {
+      ok: false,
+      reason: 'fn-threw',
+      detail: `skill threw at runtime: ${msg.slice(0, 120)}. Inputs were ${JSON.stringify(inputs).slice(0, 120)} — check the skill's schemaIn for required fields.`,
+    };
   }
+  if (!result || typeof result !== 'object') {
+    return {
+      ok: false,
+      reason: 'fn-returned-non-object',
+      detail: `skill ran but returned ${typeof result} (expected an object)`,
+    };
+  }
+  return { ok: true, output: result as Record<string, unknown> };
 }
 
 /**
- * Generate a deterministic-looking demo output per capability tag.
- * Real impl would run the artifact in skill-forge's sandbox; for the live
- * demo this gives judges a satisfying "skill executed" payload.
+ * Render a placeholder when a skill couldn't actually run. The note is
+ * shaped by the typed failure reason from runForgedSkill so the LLM (and
+ * human reading the chat) sees an honest cause — "you passed empty inputs"
+ * vs "the artifact is on a different server" vs "the seed key changed".
  */
-function stubSkillOutput(tag: string, inputs: Record<string, unknown>): Record<string, unknown> {
-  if (tag.startsWith('fetch.arxiv')) {
+function stubSkillOutput(
+  tag: string,
+  inputs: Record<string, unknown>,
+  failure?: { reason: SkillExecFailureReason; detail: string }
+): Record<string, unknown> {
+  // For the two demo-templated tags we still return synthetic data so the
+  // hackathon walkthrough has SOMETHING to show. Otherwise, surface the
+  // real reason the skill couldn't run.
+  if (tag.startsWith('fetch.arxiv') && !failure) {
     return {
       paperId: inputs.paperId ?? '2604.27264',
       title: 'A Self-Evolving Framework for Autonomous Onchain Agents',
@@ -1918,22 +2042,72 @@ function stubSkillOutput(tag: string, inputs: Record<string, unknown>): Record<s
       pdfUrl: `https://arxiv.org/pdf/${inputs.paperId ?? '2604.27264'}.pdf`,
     };
   }
-  if (tag.startsWith('text.summarize')) {
+  if (tag.startsWith('text.summarize') && !failure) {
     return {
       summary: '[stub] would summarize the input text',
       length: typeof inputs.text === 'string' ? (inputs.text as string).length : 0,
     };
   }
-  // Default for freshly-forged or untemplated skills. Clean, user-readable.
-  // The "do not fabricate" directive lives in the system prompt now, not
-  // in the tool output — that text shouldn't leak to humans buying via
-  // the x402 paid path on the market.
   return {
     capability: tag,
     inputs,
     placeholder: true,
-    note: `Skill ${tag} is registered on-chain (artifact pinned to 0G Storage) but the marketplace server runs a placeholder for freshly-evolved skills in this build.`,
+    failure: failure ? failure.reason : 'unknown',
+    note: failure
+      ? buildHonestPlaceholderNote(tag, failure)
+      : `Skill ${tag} ran but returned no usable output.`,
   };
+}
+
+function buildHonestPlaceholderNote(
+  tag: string,
+  failure: { reason: SkillExecFailureReason; detail: string }
+): string {
+  switch (failure.reason) {
+    case 'fn-threw':
+      return (
+        `Skill ${tag} ran but threw at runtime — most often this means the ` +
+        `inputs were missing required fields. ${failure.detail}`
+      );
+    case 'fn-returned-non-object':
+      return (
+        `Skill ${tag} ran but returned a non-object result. ${failure.detail}`
+      );
+    case 'timeout':
+      return (
+        `Skill ${tag} timed out — likely an external API hung or the code ` +
+        `looped. ${failure.detail}`
+      );
+    case 'compile-failed':
+      return (
+        `Skill ${tag}'s artifact failed to compile (likely codegen artifact ` +
+        `is malformed). ${failure.detail}`
+      );
+    case 'fn-not-callable':
+      return (
+        `Skill ${tag}'s artifact compiled but the entry point is missing. ${failure.detail}`
+      );
+    case 'blob-not-found':
+      return (
+        `Skill ${tag} is registered on-chain but its encrypted artifact is ` +
+        `not on this marketplace server (it was forged on a different ` +
+        `instance). Pick a skill from a different producer, or ask its ` +
+        `owner to re-publish from this server.`
+      );
+    case 'decrypt-failed':
+      return (
+        `Skill ${tag}'s artifact is on this server but won't decrypt — ` +
+        `likely encrypted with a different AGENT_WALLET_SEED than this ` +
+        `server is using. Pick a skill from a different producer.`
+      );
+    case 'no-encryption-key':
+      return (
+        `This marketplace server has no encryption key configured, so it ` +
+        `cannot decrypt any forged skill artifacts.`
+      );
+    default:
+      return `Skill ${tag} could not be executed (${failure.reason}). ${failure.detail}`;
+  }
 }
 
 async function triggerSettlement(
