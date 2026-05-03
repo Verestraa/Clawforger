@@ -93,6 +93,56 @@ vercel --prod
 Wire `clawforger.xyz` (or your domain) to the Studio's URL via
 DNS / your DNS provider.
 
+## Persistent storage — REQUIRED for the market service
+
+The `clawforger-market` service writes three things to disk:
+
+| File | What it stores | Why it matters |
+|------|---------------|----------------|
+| `data/agent-memory.json` | Encrypted chat logs (per iNFT) AND encrypted skill artifact blobs | Without this, chat history disappears every deploy and freshly-forged skills can't be executed by buyers |
+| `data/agent-personas.json` | `{tokenId → {name, systemPrompt}}` | Without this, production shows `Agent #N / custom persona` instead of the real names because localStorage is per-origin |
+
+These resolve to **`/app/data/*.json`** inside the container. Railway's
+default container filesystem is ephemeral — every redeploy wipes them.
+You **must** mount a Railway volume.
+
+### Mount the volume
+
+1. Open the **clawforger-market** service in Railway
+2. **Settings** → **Volumes** → **+ Add Volume**
+3. Set:
+   - **Mount Path**: `/app/data`
+   - **Size**: 1 GB (the JSON files stay KB-scale; 1 GB is overkill but cheap)
+4. Click **Create**. Railway auto-redeploys.
+
+### Override paths if you need to
+
+Both paths are `process.env.<NAME> ?? <default>`:
+
+```
+MEMORY_FILE   = /app/data/agent-memory.json    (default)
+PERSONAS_FILE = /app/data/agent-personas.json  (default)
+```
+
+If your volume mount path differs (e.g. `/data` instead of `/app/data`),
+set these vars and the server will write there instead.
+
+### Verifying persistence after deploy
+
+```bash
+# 1. Health check
+curl https://skill-market.clawforger.xyz/health
+
+# 2. Mint an agent on the studio, chat once
+# 3. Push any commit to trigger a redeploy
+# 4. After redeploy, the persona should still be there:
+curl https://skill-market.clawforger.xyz/admin/agent/<tokenId>/persona
+# → { ok: true, persona: { name, systemPrompt, ... } }
+```
+
+Anything written *before* the volume was mounted is gone — the volume
+mount replaces the (empty) ephemeral `/app/data` directory at start.
+
 ## Security notes — read before deploying
 
 1. **`DEPLOYER_PRIVATE_KEY` is sensitive.** Railway env vars are encrypted
@@ -105,9 +155,6 @@ DNS / your DNS provider.
 3. **CORS** — both servers use `cors({ origin: '*' })` for hackathon ease.
    For production, restrict to your studio's domain:
    `cors({ origin: 'https://clawforger.xyz' })`.
-4. **No persistent storage needed** — the market server's `LocalSkillIndex`
-   auto-syncs from chain on every request. Server can restart any time
-   without state loss. Don't bother with Railway volumes.
 
 ## Healthcheck recommendation
 
