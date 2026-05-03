@@ -247,7 +247,7 @@ export default function Mint() {
             className="input min-h-[140px]"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="You are an autonomous agent that…"
+            placeholder="You are Researcher. You find, fetch, and summarize academic literature. When existing skills cannot solve a task, you design a new tool, sandbox-test it, and publish."
             disabled={minting}
           />
         </Field>

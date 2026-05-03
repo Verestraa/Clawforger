@@ -22,19 +22,28 @@ export default function App() {
             <span><span className="text-accent">claw</span>forger</span>
           </Link>
           <nav className="flex gap-1 text-sm">
-            {NAV.map((n) => (
-              <Link
-                key={n.to}
-                to={n.to}
-                className={`px-3 py-1.5 rounded-md transition ${
-                  pathname === n.to
-                    ? 'bg-zinc-800 text-zinc-100'
-                    : 'text-zinc-400 hover:text-zinc-100'
-                }`}
-              >
-                {n.label}
-              </Link>
-            ))}
+            {NAV.map((n) => {
+              const active =
+                n.to === '/'
+                  ? pathname === '/'
+                  : pathname === n.to || pathname.startsWith(n.to + '/');
+              return (
+                <Link
+                  key={n.to}
+                  to={n.to}
+                  className={`relative px-3 py-1.5 transition ${
+                    active
+                      ? 'text-zinc-100'
+                      : 'text-zinc-300 hover:text-zinc-100'
+                  }`}
+                >
+                  {n.label}
+                  {active && (
+                    <span className="absolute -bottom-[18px] left-2 right-2 h-0.5 rounded-full bg-accent shadow-[0_0_12px_rgba(183,95,255,0.6)]" />
+                  )}
+                </Link>
+              );
+            })}
           </nav>
         </div>
         <div className="flex items-center gap-3">
@@ -45,7 +54,7 @@ export default function App() {
       <main className="flex-1 px-6 py-8 max-w-6xl mx-auto w-full">
         <Outlet />
       </main>
-      <footer className="border-t border-zinc-900 px-6 py-4 text-xs text-zinc-500 flex justify-between">
+      <footer className="border-t border-zinc-900 px-6 py-4 text-xs text-zinc-400 flex justify-between">
         <div>
           all-in on{' '}
           <a className="text-accent" href="https://0g.ai" target="_blank" rel="noopener">

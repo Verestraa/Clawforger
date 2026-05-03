@@ -8,15 +8,34 @@
     color: #f0f4ff;
     color-scheme: dark;
     scroll-behavior: smooth;
+
+    /* Sans for body + headings, mono kept available via .font-mono / code / pre.
+       Reserving monospace for code, addresses, hashes, terminal-vibe surfaces makes
+       prose drastically more readable while keeping the dev-tool aesthetic. */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+      'Helvetica Neue', Arial, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas,
+      'Liberation Mono', monospace;
   }
   body {
-    @apply font-mono text-zinc-100;
+    @apply text-zinc-100 antialiased;
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
     background: transparent;
     overflow-x: hidden;
     min-height: 100vh;
   }
-  h1, h2, h3 {
+  /* Anything explicitly mono — code, kbd, pre, the .font-mono utility — gets
+     JetBrains Mono. Tailwind's own .font-mono utility is overridden via the
+     attribute selector so we don't have to retag every instance. */
+  code, kbd, pre, samp,
+  .font-mono,
+  [class*="font-mono"] {
+    font-family: var(--font-mono);
+  }
+  h1, h2, h3, h4 {
     @apply tracking-tight;
+    font-weight: 700;
   }
   ::selection {
     background: rgba(183, 95, 255, 0.85);

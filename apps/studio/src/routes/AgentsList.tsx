@@ -97,21 +97,38 @@ export default function AgentsList() {
       </div>
 
       {!isConnected && (
-        <div className="card text-center text-zinc-500">
-          connect a wallet to see your agents.
+        <div className="card text-center space-y-3 py-10">
+          <p className="text-zinc-200 font-medium">Connect a wallet to see your iNFT agents.</p>
+          <p className="text-xs text-zinc-400 max-w-sm mx-auto leading-relaxed">
+            Or mint your first agent in 30 seconds — pick a persona, sign a tx on 0G Galileo,
+            done.
+          </p>
+          <div className="pt-1">
+            <Link to="/mint" className="btn btn-primary">
+              Mint your first agent →
+            </Link>
+          </div>
         </div>
       )}
 
       {isConnected && loading && (
-        <div className="card text-center text-zinc-500">loading agents…</div>
+        <div className="card text-center text-zinc-300 text-sm">
+          Reading on-chain ClawforgerINFT events…
+        </div>
       )}
 
       {isConnected && !loading && agents.length === 0 && (
-        <div className="card text-center text-zinc-500">
-          No agents minted yet.{' '}
-          <Link to="/mint" className="text-accent">
-            Mint one →
-          </Link>
+        <div className="card text-center space-y-3 py-10">
+          <p className="text-zinc-200 font-medium">No iNFT agents minted to this wallet yet.</p>
+          <p className="text-xs text-zinc-400 max-w-sm mx-auto leading-relaxed">
+            Mint a Researcher, Writer, Trader, or Analyst — each becomes an ERC-7857 iNFT
+            with its own deterministic signing wallet.
+          </p>
+          <div className="pt-1">
+            <Link to="/mint" className="btn btn-primary">
+              Mint your first agent →
+            </Link>
+          </div>
         </div>
       )}
 

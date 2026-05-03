@@ -26,7 +26,15 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
-        <RainbowKitProvider theme={darkTheme({ accentColor: '#f97316' })}>
+        <RainbowKitProvider
+          theme={darkTheme({
+            accentColor: '#b75fff',          // studio's signature purple (matches CSS --accent)
+            accentColorForeground: '#ffffff',
+            borderRadius: 'medium',
+            fontStack: 'system',
+            overlayBlur: 'small',
+          })}
+        >
           <StarryBackground />
           <BrowserRouter>
             <Routes>

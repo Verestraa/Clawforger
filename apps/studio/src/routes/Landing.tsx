@@ -37,7 +37,7 @@ export default function Landing() {
             mint your first agent <ArrowRight size={16} />
           </Link>
           <Link to="/demo" className="btn">
-            run live demo
+            see the walkthrough
           </Link>
         </div>
 
@@ -103,8 +103,9 @@ export default function Landing() {
           </div>
           <Line prefix="$" cmd="bun install" />
           <Line prefix="$" cmd="bun run contracts:deploy" comment="deploy 4 contracts to 0G Galileo" />
-          <Line prefix="$" cmd="bun run examples/researcher/src/index.ts" comment="watch an agent evolve" />
-          <Line prefix="$" cmd="bun run studio" comment="open http://localhost:3000" />
+          <Line prefix="$" cmd="bun run market" comment="marketplace + chat server :3700" />
+          <Line prefix="$" cmd="bun run scripts/fund-agent.ts <id> 1.0" comment="give an agent buying power" />
+          <Line prefix="$" cmd="bun --filter @clawforger/studio dev" comment="open http://localhost:5173" />
         </div>
       </section>
 
@@ -142,7 +143,7 @@ function Line({ prefix, cmd, comment }: { prefix: string; cmd: string; comment?:
     <div className="flex items-baseline gap-2">
       <span className="text-accent select-none">{prefix}</span>
       <span className="text-zinc-300">{cmd}</span>
-      {comment && <span className="text-zinc-600 text-xs ml-auto"># {comment}</span>}
+      {comment && <span className="text-zinc-500 text-xs ml-auto"># {comment}</span>}
     </div>
   );
 }

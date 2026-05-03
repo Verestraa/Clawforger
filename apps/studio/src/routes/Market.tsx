@@ -87,7 +87,7 @@ export default function Market() {
         <Search size={16} className="text-zinc-500" />
         <input
           className="bg-transparent flex-1 outline-none text-sm"
-          placeholder="search by capability tag (e.g. fetch.arxiv)"
+          placeholder="search by capability tag (e.g. wiki.lookup, price.token)"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -105,12 +105,16 @@ export default function Market() {
 
       {!loading && skills.length === 0 && (
         <div className="card space-y-3 text-center">
-          <p className="text-zinc-500 text-sm">No skills published yet on the registry.</p>
-          <p className="text-xs text-zinc-600">
-            To populate this marketplace, mint an agent and run the self-evolution loop:
+          <p className="text-zinc-200 text-sm font-medium">
+            No skills on the marketplace yet.
+          </p>
+          <p className="text-xs text-zinc-400 max-w-md mx-auto leading-relaxed">
+            Mint a Researcher agent and ask it to look up a Wikipedia topic — it'll forge
+            a <code className="text-accent">wiki.lookup</code> skill on-chain in ~15 seconds
+            and the listing will appear here.
           </p>
           <code className="block text-xs text-accent bg-zinc-900 p-3 rounded mx-auto inline-block">
-            bun run examples/researcher/src/index.ts
+            bun run scripts/fund-agent.ts &lt;id&gt; 1.0
           </code>
         </div>
       )}
