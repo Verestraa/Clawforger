@@ -541,6 +541,15 @@ const PURCHASE_TOOL_DEF = {
             'The capability tag (e.g. "price.crypto", "wiki.lookup") of the skill to purchase. ' +
             'Must match a skill another agent has published.',
         },
+        producerTokenId: {
+          type: 'integer',
+          description:
+            'The tokenId of the producer iNFT that owns this skill (visible in the ' +
+            'marketplace listing as "owner: iNFT #N"). Multiple agents can publish ' +
+            'skills with the same capabilityTag, so this disambiguates which one to buy. ' +
+            'ALWAYS pass this — without it, the server picks the oldest match which may ' +
+            'have a missing artifact.',
+        },
         inputs: {
           type: 'object',
           description:
@@ -548,7 +557,7 @@ const PURCHASE_TOOL_DEF = {
           additionalProperties: true,
         },
       },
-      required: ['capabilityTag', 'inputs'],
+      required: ['capabilityTag', 'producerTokenId', 'inputs'],
     },
   },
 };
@@ -871,8 +880,11 @@ app.post('/admin/chat', async (c) => {
           ``,
           `These skills belong to other iNFTs. You can buy them with mUSDC from`,
           `your own agent's deterministic sub-wallet. Use \`purchase_skill\` with`,
-          `the capabilityTag — your wallet signs an mUSDC.transfer to the producer's`,
-          `RoyaltyVault, then the skill executes and returns its result.`,
+          `BOTH \`capabilityTag\` AND \`producerTokenId\` (the iNFT # of the owner)`,
+          `— multiple agents can publish skills with the same tag, so you must`,
+          `always tell the server which producer's skill you want. Your wallet`,
+          `signs an mUSDC.transfer to that producer's RoyaltyVault, then the`,
+          `skill executes and returns its result.`,
           ``,
           ...otherSkills.map((s) => {
             const priceMUSDC = (s.priceUSDC / 1_000_000).toFixed(4);
@@ -896,7 +908,7 @@ app.post('/admin/chat', async (c) => {
                     })
                     .join(', ')}}`
                 : '{}';
-            return `  - capability: "${s.capabilityTag}" — owner: iNFT #${s.ownerINFT.tokenId} — price: ${priceMUSDC} mUSDC — inputs: ${inputSig}`;
+            return `  - capability: "${s.capabilityTag}" — producerTokenId: ${s.ownerINFT.tokenId} — price: ${priceMUSDC} mUSDC — inputs: ${inputSig}`;
           }),
         ].join('\n')
       : '';
@@ -914,14 +926,16 @@ app.post('/admin/chat', async (c) => {
         `forge new skills. The default flow is:`,
         ``,
         `  1. Read the marketplace listing above. Match the user's request to`,
-        `     a capabilityTag.`,
+        `     a capabilityTag AND note its \`producerTokenId\`.`,
         `  2. PREVIEW THE PURCHASE before spending. Reply to the user with:`,
-        `        "I found \`<capabilityTag>\` from iNFT #<owner> at <price> mUSDC.`,
+        `        "I found \`<capabilityTag>\` from iNFT #<producerTokenId> at <price> mUSDC.`,
         `         I'll pass {<exact inputs from schema>}. Confirm to buy?"`,
         `     Wait for the user's "yes" / "go" / "confirm" before calling`,
         `     \`purchase_skill\`. Skip this preview ONLY if the user already`,
         `     said something like "buy X for me" or "go ahead and purchase".`,
-        `  3. Call \`purchase_skill\` with capabilityTag + the inputs object.`,
+        `  3. Call \`purchase_skill\` with capabilityTag + producerTokenId + inputs.`,
+        `     ALWAYS pass \`producerTokenId\` — without it the server may pick a`,
+        `     stale skill with a missing artifact and you'll get a placeholder.`,
         `     The \`inputs:\` field on each marketplace listing tells you the`,
         `     EXACT key names to use (e.g. \`{symbol: string}\` means pass`,
         `     \`{"symbol": "ETH"}\`, NOT \`{"token": "ETH"}\`).`,
@@ -1056,6 +1070,7 @@ app.post('/admin/chat', async (c) => {
           }
           const a = parsedArgs as {
             capabilityTag?: string;
+            producerTokenId?: number | string;
             inputs?: Record<string, unknown>;
           };
           if (!a.capabilityTag) {
@@ -1075,8 +1090,18 @@ app.post('/admin/chat', async (c) => {
             });
             continue;
           }
+          // Coerce producerTokenId — LLMs sometimes return strings.
+          let producerTokenId: bigint | undefined;
+          if (a.producerTokenId !== undefined && a.producerTokenId !== null) {
+            try {
+              producerTokenId = BigInt(a.producerTokenId);
+            } catch {
+              /* leave undefined → server falls back to newest match */
+            }
+          }
           const buyResult = await purchaseSkillForAgent(agentTokenId, {
             capabilityTag: a.capabilityTag,
+            producerTokenId,
             inputs: a.inputs ?? {},
           });
           invocations.push({
@@ -1641,7 +1666,11 @@ const skillCodeCache = new Map<string, string>();
  */
 async function purchaseSkillForAgent(
   buyerTokenId: bigint,
-  args: { capabilityTag: string; inputs: Record<string, unknown> }
+  args: {
+    capabilityTag: string;
+    producerTokenId?: bigint;
+    inputs: Record<string, unknown>;
+  }
 ): Promise<{
   ok: boolean;
   capabilityTag?: string;
@@ -1649,6 +1678,7 @@ async function purchaseSkillForAgent(
   paidMUSDC?: number;
   txHash?: Hex;
   toVault?: Address;
+  producerTokenId?: string;
   result?: Record<string, unknown>;
   reason?: string;
 }> {
@@ -1658,16 +1688,37 @@ async function purchaseSkillForAgent(
   // Look up skill — match capability tag, ignore exact case + dot/underscore
   // since OpenAI tool name sanitization changes . to _.
   const want = args.capabilityTag.toLowerCase().replace(/_/g, '.');
-  const skills = index.all();
-  const skill = skills.find(
+  const allSkills = index.all();
+  const tagMatches = allSkills.filter(
     (s) => s.capabilityTag.toLowerCase() === want
   );
-  if (!skill) {
+  if (tagMatches.length === 0) {
     return {
       ok: false,
       reason: `skill-not-found: no on-chain skill with capabilityTag="${args.capabilityTag}"`,
     };
   }
+  // If producerTokenId given, restrict to that producer. Otherwise fall
+  // back to the newest match (last published wins) — older skills may
+  // have artifacts that are no longer in this server's storage.
+  const candidates =
+    args.producerTokenId !== undefined
+      ? tagMatches.filter((s) => s.ownerINFT.tokenId === args.producerTokenId)
+      : tagMatches;
+  if (candidates.length === 0) {
+    const owners = [...new Set(tagMatches.map((s) => String(s.ownerINFT.tokenId)))];
+    return {
+      ok: false,
+      reason:
+        `skill-not-found: capabilityTag="${args.capabilityTag}" exists but no skill ` +
+        `owned by iNFT #${args.producerTokenId}. Available producers: ${owners.join(', ')}.`,
+    };
+  }
+  // index.all() returns Map insertion order, which mirrors on-chain
+  // SkillPublished log order from syncFromChain — i.e. chronological.
+  // Pick the LAST candidate = newest = most likely to still have a
+  // valid artifact in this server's storage.
+  const skill = candidates[candidates.length - 1]!;
   if (skill.ownerINFT.tokenId === buyerTokenId) {
     return {
       ok: false,
@@ -1804,6 +1855,7 @@ async function purchaseSkillForAgent(
     paidMUSDC: Number(price) / 1e6,
     txHash,
     toVault: vault,
+    producerTokenId: String(skill.ownerINFT.tokenId),
     result,
   };
 }
