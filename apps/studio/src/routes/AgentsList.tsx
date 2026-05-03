@@ -47,12 +47,23 @@ export default function AgentsList() {
           fromBlock: 'earliest',
           toBlock: 'latest',
         });
-        const items: AgentSummary[] = logs.map((l) => {
-          const tokenId = l.args.tokenId as bigint;
-          const intelligenceHash = l.args.intelligenceHash as `0x${string}`;
-          const payload = loadPayload(intelligenceHash);
-          return { tokenId, name: payload?.name ?? `Agent #${tokenId}` };
-        });
+        const items: AgentSummary[] = await Promise.all(
+          logs.map(async (l) => {
+            const tokenId = l.args.tokenId as bigint;
+            const intelligenceHash = l.args.intelligenceHash as `0x${string}`;
+            const local = loadPayload(intelligenceHash);
+            if (local?.name) {
+              // Opportunistic backfill: if this client has the persona in
+              // localStorage, push it to the server so other origins can
+              // resolve it. Server returns 409 if already registered, so
+              // this is idempotent.
+              void backfillPersonaToServer(tokenId, local.name, local.systemPrompt, address);
+              return { tokenId, name: local.name };
+            }
+            const remote = await fetchPersonaFromServer(tokenId);
+            return { tokenId, name: remote?.name ?? `Agent #${tokenId}` };
+          })
+        );
         setAgents(items.sort((a, b) => Number(b.tokenId - a.tokenId)));
       } catch (err) {
         console.error('agents list query failed', err);
@@ -146,4 +157,34 @@ export default function AgentsList() {
       )}
     </div>
   );
+}
+
+async function fetchPersonaFromServer(
+  tokenId: bigint
+): Promise<{ name: string; systemPrompt: string } | null> {
+  try {
+    const res = await fetch(`${MARKET_URL}/admin/agent/${String(tokenId)}/persona`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { ok: boolean; persona?: { name: string; systemPrompt: string } };
+    return data.ok && data.persona ? data.persona : null;
+  } catch {
+    return null;
+  }
+}
+
+async function backfillPersonaToServer(
+  tokenId: bigint,
+  name: string,
+  systemPrompt: string,
+  ownerAddress: string
+): Promise<void> {
+  try {
+    await fetch(`${MARKET_URL}/admin/agent/${String(tokenId)}/persona`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, systemPrompt, ownerAddress }),
+    });
+  } catch {
+    /* best-effort */
+  }
 }

@@ -25,6 +25,41 @@ const SAMPLE_PERSONAS = PERSONAS.map((p) => ({
 }));
 
 const EXPLORER = 'https://chainscan-galileo.0g.ai';
+const MARKET_URL =
+  (import.meta.env.VITE_X402_MARKET_URL as string | undefined) ??
+  'http://localhost:3700';
+
+/**
+ * Persist {tokenId → {name, systemPrompt}} to the marketplace server so
+ * any client (any origin, any device) can resolve the persona by tokenId.
+ * Best-effort — failure does not block the mint flow.
+ */
+async function registerPersonaOnServer(
+  tokenId: bigint,
+  name: string,
+  systemPrompt: string,
+  ownerAddress: string
+): Promise<void> {
+  try {
+    const res = await fetch(
+      `${MARKET_URL}/admin/agent/${String(tokenId)}/persona`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, systemPrompt, ownerAddress }),
+      }
+    );
+    if (!res.ok && res.status !== 409) {
+      console.warn(
+        '[persona-register] non-OK response',
+        res.status,
+        await res.text().catch(() => '')
+      );
+    }
+  } catch (err) {
+    console.warn('[persona-register] request failed:', (err as Error).message);
+  }
+}
 
 const AGENT_MINTED_EVENT = parseAbiItem(
   'event AgentMinted(uint256 indexed tokenId, address indexed owner, bytes32 intelligenceHash, address royaltyVault)'
@@ -76,13 +111,15 @@ export default function Mint() {
       }
     }
     if (tokenId !== undefined) {
+      // Fire-and-forget cross-origin persona registration.
+      void registerPersonaOnServer(tokenId, name, prompt, address ?? '0x');
       toast.success(`Agent #${tokenId} minted`);
       navigate(`/agents/${tokenId}`);
     } else {
       toast.success('Agent minted (tokenId not parsed)');
     }
     reset();
-  }, [isSuccess, receipt, navigate, reset]);
+  }, [isSuccess, receipt, navigate, reset, address, name, prompt]);
 
   async function handleMint() {
     if (!isConnected || !address) {
@@ -150,6 +187,7 @@ export default function Mint() {
       const tokenId = await pollNewestMint(address, publicClient);
       setKhStatus(null);
       if (tokenId !== undefined) {
+        void registerPersonaOnServer(tokenId, name, prompt, address);
         navigate(`/agents/${tokenId}`);
       }
     } catch (err) {

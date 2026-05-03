@@ -63,6 +63,33 @@ export default function AgentDetail() {
   const { events: evolutionEvents } = useAgentEvolution(tokenId);
   const { skills: publishedSkills } = useAgentSkills(tokenId);
 
+  // Server-side persona fallback (populated when localStorage doesn't
+  // have the payload — e.g. running on production after minting on
+  // localhost, or visiting from another device).
+  const [serverPersona, setServerPersona] = useState<{
+    name: string;
+    systemPrompt: string;
+  } | null>(null);
+  useEffect(() => {
+    if (tokenId === undefined) return;
+    let cancelled = false;
+    fetch(`${MARKET_URL}/admin/agent/${String(tokenId)}/persona`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok || !data.persona) return;
+        setServerPersona({
+          name: data.persona.name,
+          systemPrompt: data.persona.systemPrompt,
+        });
+      })
+      .catch(() => {
+        /* server may be unreachable — localStorage is the fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tokenId]);
+
   if (tokenId === undefined) {
     return <div className="card text-center text-zinc-500">invalid agent id</div>;
   }
@@ -83,7 +110,8 @@ export default function AgentDetail() {
     agentData as readonly [Hex, Hex, Hex, Address, bigint];
 
   const personaPayload = loadPayload(intelligenceHash);
-  const name = personaPayload?.name ?? `Agent #${tokenIdStr}`;
+  const name = personaPayload?.name ?? serverPersona?.name ?? `Agent #${tokenIdStr}`;
+  const personaPrompt = personaPayload?.systemPrompt ?? serverPersona?.systemPrompt;
 
   const totalEarned = publishedSkills.reduce(
     (acc, s) => acc + (s.priceUSDC * 95n) / 100n,
@@ -165,7 +193,7 @@ export default function AgentDetail() {
             royaltyVault={royaltyVault}
             evolvedAt={evolvedAt}
             ownerAddress={ownerAddress as Address | undefined}
-            personaPrompt={personaPayload?.systemPrompt}
+            personaPrompt={personaPrompt}
             tokenIdStr={tokenIdStr}
           />
         )}

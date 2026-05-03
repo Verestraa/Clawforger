@@ -15,6 +15,8 @@
 
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
@@ -209,6 +211,42 @@ const MEMORY_FILE =
   resolve(fileURLToPath(new URL('../../../data/agent-memory.json', import.meta.url)));
 console.log(`[skill-market] memory store: ${MEMORY_FILE}`);
 const storage = new FileBackedZGStorage(MEMORY_FILE);
+
+// ── Per-agent persona registry (cross-origin source of truth) ────
+// Browser localStorage is per-origin, so a Studio running on
+// clawforger.xyz can't read personas saved by a localhost mint. The
+// server stores {tokenId → {name, systemPrompt}} in a flat JSON file
+// so any client (any origin, any device) can resolve the persona by
+// tokenId.
+const PERSONAS_FILE =
+  process.env.PERSONAS_FILE ??
+  resolve(fileURLToPath(new URL('../../../data/agent-personas.json', import.meta.url)));
+console.log(`[skill-market] persona store: ${PERSONAS_FILE}`);
+
+interface PersonaRecord {
+  name: string;
+  systemPrompt: string;
+  ownerAddress?: string;
+  registeredAt: number;
+}
+type PersonaMap = Record<string, PersonaRecord>;
+
+function readPersonas(): PersonaMap {
+  try {
+    if (!existsSync(PERSONAS_FILE)) return {};
+    return JSON.parse(readFileSync(PERSONAS_FILE, 'utf-8')) as PersonaMap;
+  } catch (err) {
+    console.warn('[persona-store] read failed:', (err as Error).message);
+    return {};
+  }
+}
+
+function writePersona(tokenId: string, record: PersonaRecord): void {
+  const map = readPersonas();
+  map[tokenId] = record;
+  mkdirSync(dirname(PERSONAS_FILE), { recursive: true });
+  writeFileSync(PERSONAS_FILE, JSON.stringify(map, null, 2));
+}
 const encryptionKeyPromise = fallbackPk
   ? deriveKeyFromSignature(fallbackPk)
   : null;
@@ -352,6 +390,52 @@ app.get('/admin/agent/:tokenId/wallet', async (c) => {
       500
     );
   }
+});
+
+// ── Persona registry endpoints ───────────────────────────────────
+//
+// POST persists the agent's persona at mint time so any client on any
+// origin can resolve it later. GET serves it back. Personas are not
+// secret — the on-chain intelligenceHash already commits to them — so
+// no auth is required (write-once is enforced via the `force` flag).
+
+const PersonaPostSchema = z.object({
+  name: z.string().min(1).max(80),
+  systemPrompt: z.string().min(1).max(8_000),
+  ownerAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+});
+
+app.post('/admin/agent/:tokenId/persona', async (c) => {
+  const tokenIdStr = c.req.param('tokenId');
+  try {
+    BigInt(tokenIdStr);
+  } catch {
+    return c.json({ ok: false, reason: 'invalid-tokenId' }, 400);
+  }
+  const body = await c.req.json().catch(() => null);
+  const parsed = PersonaPostSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ ok: false, reason: parsed.error.message }, 400);
+  }
+  // Idempotent overwrite — last writer wins. Personas aren't secret
+  // (the on-chain intelligenceHash already commits to them) and during
+  // testing/backfill we want repeated POSTs to just succeed.
+  const record: PersonaRecord = {
+    name: parsed.data.name,
+    systemPrompt: parsed.data.systemPrompt,
+    ownerAddress: parsed.data.ownerAddress,
+    registeredAt: Math.floor(Date.now() / 1000),
+  };
+  writePersona(tokenIdStr, record);
+  return c.json({ ok: true, tokenId: tokenIdStr, persona: record });
+});
+
+app.get('/admin/agent/:tokenId/persona', (c) => {
+  const tokenIdStr = c.req.param('tokenId');
+  const map = readPersonas();
+  const record = map[tokenIdStr];
+  if (!record) return c.json({ ok: false, reason: 'not-found' }, 404);
+  return c.json({ ok: true, tokenId: tokenIdStr, persona: record });
 });
 
 /** Serialize a SkillManifest to JSON-safe form (BigInt → string). */

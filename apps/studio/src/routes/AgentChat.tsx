@@ -75,6 +75,33 @@ export default function AgentChat() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
+  // Server-side persona fallback (used when localStorage is empty —
+  // e.g. running on production after minting on localhost). Same source
+  // of truth used by AgentsList + AgentDetail.
+  const [serverPersona, setServerPersona] = useState<{
+    name: string;
+    systemPrompt: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!tokenIdStr) return;
+    let cancelled = false;
+    fetch(`${MARKET_URL}/admin/agent/${tokenIdStr}/persona`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok || !data.persona) return;
+        setServerPersona({
+          name: data.persona.name,
+          systemPrompt: data.persona.systemPrompt,
+        });
+      })
+      .catch(() => {
+        /* server unreachable — localStorage is the fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tokenIdStr]);
+
   // Load encrypted chat history from the agent's 0G memory log on mount.
   // Server reads agents/<tokenId>/__log_index__ from FileBackedZGStorage,
   // decrypts each chat.turn entry with the deployer-derived key, and
@@ -136,8 +163,10 @@ export default function AgentChat() {
   const [intelligenceHash] = agentData as readonly [Hex, Hex, Hex, Address, bigint];
   const persona = loadPayload(intelligenceHash);
   const personaPrompt =
-    persona?.systemPrompt ?? `You are an autonomous AI agent (Clawforger #${tokenIdStr}).`;
-  const agentName = persona?.name ?? `Agent #${tokenIdStr}`;
+    persona?.systemPrompt ??
+    serverPersona?.systemPrompt ??
+    `You are an autonomous AI agent (Clawforger #${tokenIdStr}).`;
+  const agentName = persona?.name ?? serverPersona?.name ?? `Agent #${tokenIdStr}`;
 
   async function send() {
     const content = draft.trim();
