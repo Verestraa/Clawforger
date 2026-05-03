@@ -25,6 +25,7 @@ import {
   Wrench,
   Trash2,
   Database,
+  Lightbulb,
 } from 'lucide-react';
 import type { Address, Hex } from 'viem';
 import { ABIS, ADDRESSES } from '@/lib/contracts';
@@ -32,6 +33,7 @@ import { loadPayload } from '@/lib/intelligence';
 import { ComputePoolBadge } from '@/components/ComputePoolBadge';
 import { AgentAvatar, PERSONA_TONE } from '@/components/AgentAvatar';
 import { AgentWalletBadge } from '@/components/AgentWalletBadge';
+import { PromptExamplesModal } from '@/components/PromptExamplesModal';
 
 const MARKET_URL =
   (import.meta.env.VITE_X402_MARKET_URL as string | undefined) ?? 'http://localhost:3700';
@@ -73,6 +75,7 @@ export default function AgentChat() {
   const [transcript, setTranscript] = useState<ChatTurn[]>([]);
   const [sending, setSending] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [showExamples, setShowExamples] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // Server-side persona fallback (used when localStorage is empty —
@@ -270,15 +273,24 @@ export default function AgentChat() {
             <span className="font-mono text-zinc-400">{intelligenceHash.slice(0, 12)}…</span>
           </p>
         </div>
-        {transcript.length > 0 && (
+        <div className="flex flex-col gap-1.5 self-start flex-shrink-0">
           <button
-            onClick={clearHistory}
-            className="text-[10px] text-zinc-500 hover:text-red-400 flex items-center gap-1 self-start"
-            title="wipe encrypted chat log"
+            onClick={() => setShowExamples(true)}
+            className="text-[10px] text-zinc-400 hover:text-accent flex items-center gap-1 border border-zinc-800 hover:border-accent/40 rounded px-2 py-1 transition"
+            title="show example prompts you can run end-to-end"
           >
-            <Trash2 size={11} /> clear
+            <Lightbulb size={11} /> examples
           </button>
-        )}
+          {transcript.length > 0 && (
+            <button
+              onClick={clearHistory}
+              className="text-[10px] text-zinc-500 hover:text-red-400 flex items-center gap-1"
+              title="wipe encrypted chat log"
+            >
+              <Trash2 size={11} /> clear
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Transcript */}
@@ -339,6 +351,17 @@ export default function AgentChat() {
         </a>
         . each reply carries a chatID; processResponse() verifies the TEE signature.
       </div>
+
+      {showExamples && (
+        <PromptExamplesModal
+          agentName={agentName}
+          onUse={(prompt) => {
+            setDraft(prompt);
+            setShowExamples(false);
+          }}
+          onClose={() => setShowExamples(false)}
+        />
+      )}
     </div>
   );
 }
